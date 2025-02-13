@@ -17,6 +17,7 @@ Features:
 - Supports configurable TCP port
 - Implements proper device initialization sequence
 - Handles device reconnection
+- Supports TCP keepalive for connection monitoring
 
 Device specifications:
 - Maximum theoretical frame rate: 200,000 fpm
@@ -48,6 +49,8 @@ class picADSB_multiplexer:
         stats (dict): Runtime statistics
         clients (list): Connected TCP clients
         running (bool): Main loop control flag
+        keepalive_interval (float): Interval between keepalive messages
+        keepalive_message (bytes): Keepalive message format
     """
 
     def __init__(self, tcp_port: int = 30002, serial_port: str = '/dev/ttyACM0'):
@@ -71,13 +74,29 @@ class picADSB_multiplexer:
             'start_time': time.time(),
             'last_minute_count': 0,
             'last_minute_time': time.time(),
-            'errors': 0
+            'errors': 0,
+            'keepalives_sent': 0
         }
 
         # Initialize message queue and client list
         self.message_queue = queue.Queue(maxsize=1000)  # Buffer for 1000 messages
         self.clients = []
         self.running = True
+
+        # Keepalive configuration
+        self.keepalive_interval = 5.0  # seconds
+        self.last_keepalive_time = time.time()
+        self.keepalive_message = b"*0000;\r\n"  # Null ADSB message as keepalive
+        self.last_data_time = time.time()
+        self.data_timeout = 30.0  # seconds before sending keepalive
+
+        # TCP socket options for keepalive
+        self.tcp_keepalive_options = {
+            socket.SO_KEEPALIVE: 1,    # Enable keepalive
+            socket.TCP_KEEPIDLE: 60,   # Start sending keepalive after 60 seconds of idle
+            socket.TCP_KEEPINTVL: 10,  # Send keepalive every 10 seconds
+            socket.TCP_KEEPCNT: 5      # Drop connection after 5 failed keepalives
+        }
 
         # Initialize network and serial interfaces
         self._init_socket()
@@ -112,10 +131,18 @@ class picADSB_multiplexer:
         self.logger.addHandler(ch)
 
     def _init_socket(self):
-        """Initialize TCP server socket with error handling."""
+        """Initialize TCP server socket with keepalive support."""
         try:
             self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
+            # Set TCP keepalive options
+            for option, value in self.tcp_keepalive_options.items():
+                try:
+                    self.server_socket.setsockopt(socket.SOL_TCP, option, value)
+                except:
+                    self.logger.warning(f"Failed to set TCP keepalive option {option}")
+
             self.server_socket.bind(('', self.tcp_port))
             self.server_socket.listen(5)
             self.server_socket.setblocking(False)
@@ -144,7 +171,7 @@ class picADSB_multiplexer:
         except Exception as e:
             self.logger.error(f"Failed to initialize serial port: {e}")
             raise
-
+            
     def _initialize_device(self):
         """
         Initialize ADS-B device with proper command sequence.
@@ -181,10 +208,15 @@ class picADSB_multiplexer:
             self.stats['last_minute_count'] = self.stats['messages_processed']
             self.stats['last_minute_time'] = current_time
 
-            self.logger.info(f"Messages per minute: {messages_per_minute}")
+            self.logger.info(
+                f"Statistics: Messages/min: {messages_per_minute}, "
+                f"Total: {self.stats['messages_processed']}, "
+                f"Keepalives: {self.stats['keepalives_sent']}, "
+                f"Errors: {self.stats['errors']}"
+            )
 
     def _handle_client_connections(self):
-        """Handle new client connections and disconnections."""
+        """Handle new client connections and set keepalive options."""
         try:
             readable, _, _ = select.select([self.server_socket] + self.clients, [], [], 0.1)
 
@@ -193,6 +225,14 @@ class picADSB_multiplexer:
                     # New connection
                     client_socket, address = self.server_socket.accept()
                     client_socket.setblocking(False)
+
+                    # Set keepalive options for new client
+                    for option, value in self.tcp_keepalive_options.items():
+                        try:
+                            client_socket.setsockopt(socket.SOL_TCP, option, value)
+                        except:
+                            self.logger.warning(f"Failed to set keepalive option {option} for {address}")
+
                     self.clients.append(client_socket)
                     self.logger.info(f"New client connected from {address}")
                 else:
@@ -202,25 +242,61 @@ class picADSB_multiplexer:
                         if not data:
                             self.clients.remove(sock)
                             sock.close()
-                            self.logger.info("Client disconnected")
+                            self.logger.info(f"Client {sock.getpeername()} disconnected")
                     except:
-                        self.clients.remove(sock)
-                        sock.close()
-                        self.logger.info("Client connection lost")
+                        try:
+                            self.clients.remove(sock)
+                            sock.close()
+                            self.logger.info(f"Client connection lost")
+                        except:
+                            pass
         except Exception as e:
             self.logger.error(f"Error handling client connections: {e}")
+
+    def _send_keepalive(self):
+        """
+        Send keepalive messages to all connected clients.
+        Sends keepalive if no data has been received for data_timeout seconds
+        and last keepalive was sent more than keepalive_interval seconds ago.
+        """
+        current_time = time.time()
+
+        if (current_time - self.last_data_time >= self.data_timeout and
+            current_time - self.last_keepalive_time >= self.keepalive_interval):
+
+            disconnected_clients = []
+            for client in self.clients:
+                try:
+                    client.send(self.keepalive_message)
+                    self.stats['keepalives_sent'] += 1
+                    self.logger.debug(f"Sent keepalive to {client.getpeername()}")
+                except:
+                    disconnected_clients.append(client)
+                    self.logger.warning(f"Failed to send keepalive, marking client for removal")
+
+            # Remove disconnected clients
+            for client in disconnected_clients:
+                try:
+                    self.clients.remove(client)
+                    client.close()
+                    self.logger.info(f"Removed disconnected client")
+                except:
+                    pass
+
+            self.last_keepalive_time = current_time
 
     def _process_serial_data(self):
         """
         Process incoming data from the ADS-B device.
-
-        Handles message framing and queuing for broadcast to clients.
-        Messages are expected to start with '*' and end with ';'.
+        Updates last_data_time when real data is received.
         """
         try:
             if self.ser.in_waiting:
                 data = self.ser.read_all()
                 if data:
+                    # Update last data time
+                    self.last_data_time = time.time()
+
                     # Split into individual messages
                     messages = data.split(b';')
                     for msg in messages:
@@ -272,6 +348,7 @@ class picADSB_multiplexer:
         - Client connections
         - Message reception
         - Message broadcasting
+        - Keepalive messages
         - Statistics updates
         """
         self.logger.info("Starting ADS-B multiplexer")
@@ -281,6 +358,7 @@ class picADSB_multiplexer:
                 self._handle_client_connections()
                 self._process_serial_data()
                 self._broadcast_messages()
+                self._send_keepalive()
                 self._update_stats()
                 time.sleep(0.001)  # Prevent CPU overload
 
