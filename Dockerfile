@@ -22,7 +22,7 @@ COPY entrypoint.sh .
 RUN mkdir -p /app/logs
 
 # Make entrypoint executable
-RUN chmod +x /entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
 
 # Set environment variables with defaults
 ENV ADSB_TCP_PORT=30002
