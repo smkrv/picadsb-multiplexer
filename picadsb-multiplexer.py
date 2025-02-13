@@ -38,7 +38,7 @@ from datetime import datetime
 from typing import Optional, Dict, Any
 import threading
 
-class ADSBMuxer:
+class picADSB_multiplexer:
     """
     Main multiplexer class that handles device communication and client connections.
 
@@ -89,7 +89,7 @@ class ADSBMuxer:
 
     def _setup_logging(self):
         """Configure logging with both file and console output."""
-        self.logger = logging.getLogger('ADSBMuxer')
+        self.logger = logging.getLogger('picADSB_multiplexer')
         self.logger.setLevel(logging.DEBUG)
 
         # Create logs directory if needed
@@ -332,7 +332,7 @@ def main():
     args = parser.parse_args()
 
     try:
-        muxer = ADSBMuxer(tcp_port=args.port, serial_port=args.device)
+        muxer = picADSB_multiplexer(tcp_port=args.port, serial_port=args.device)
         muxer.run()
     except Exception as e:
         print(f"Error: {e}")
