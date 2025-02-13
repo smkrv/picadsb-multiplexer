@@ -39,10 +39,8 @@ A Docker-based TCP multiplexer for MicroADSB (adsbPIC) USB receivers that allows
 
 1. Create a `docker-compose.yml`:
 ```yaml
-version: '3.8'
-
 services:
-  adsb-muxer:
+  picadsb-multiplexer:
     image: ghcr.io/smkrv/picadsb-multiplexer:latest
     container_name: picadsb-multiplexer
     restart: unless-stopped
@@ -67,7 +65,7 @@ docker-compose up -d
 
 ```bash
 docker run -d \
-    --name adsb-muxer \
+    --name picadsb-multiplexer \
     --device=/dev/ttyACM0:/dev/ttyACM0 \
     -p 30002:30002 \
     -e ADSB_TCP_PORT=30002 \
@@ -165,7 +163,7 @@ docker build -t picadsb-multiplexer .
 docker run -it --rm \
     --device=/dev/ttyACM0:/dev/ttyACM0 \
     -e ADSB_LOG_LEVEL=DEBUG \
-    adsb-muxer
+    picadsb-multiplexer
 ```
 
 ## Monitoring
@@ -174,7 +172,7 @@ docker run -it --rm \
 
 Logs are stored in the `logs` directory:
 - `picadsb-multiplexer_YYYYMMDD_HHMMSS.log`: Detailed application log
-- Container logs can be viewed with `docker logs adsb-muxer`
+- Container logs can be viewed with `docker logs picadsb-multiplexer`
 
 ### Statistics
 
