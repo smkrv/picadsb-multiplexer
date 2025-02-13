@@ -2,6 +2,7 @@ version: '3.8'
 
 services:
   adsb-muxer:
+    platform: auto
     image: ghcr.io/smkrv/picadsb-multiplexer:latest
     container_name: picadsb-multiplexer
     restart: unless-stopped
