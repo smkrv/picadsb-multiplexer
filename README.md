@@ -1,4 +1,4 @@
-# ADS-B Multiplexer for MicroADSB / adsbPIC by Sprut
+# ADS-B Multiplexer for MicroADSB | adsbPIC by Sprut
 
 A Docker-based TCP multiplexer for MicroADSB (adsbPIC) USB receivers that allows sharing ADS-B data with multiple clients (like dump1090).
 
@@ -150,7 +150,7 @@ docker build -t picadsb-multiplexer .
 ├── Dockerfile
 ├── docker-compose.yml
 ├── requirements.txt
-├── adsb_muxer.py
+├── picadsb-multiplexer.py
 ├── entrypoint.sh
 ├── .dockerignore
 └── .github
@@ -173,7 +173,7 @@ docker run -it --rm \
 ### Logs
 
 Logs are stored in the `logs` directory:
-- `adsb_muxer_YYYYMMDD_HHMMSS.log`: Detailed application log
+- `picadsb-multiplexer_YYYYMMDD_HHMMSS.log`: Detailed application log
 - Container logs can be viewed with `docker logs adsb-muxer`
 
 ### Statistics
