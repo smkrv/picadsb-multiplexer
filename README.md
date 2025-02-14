@@ -5,6 +5,10 @@
 
 A Docker-based TCP multiplexer for MicroADSB (adsbPIC) USB receivers that allows sharing ADS-B data with multiple clients (like dump1090).
 
+If you have a USB ADS-B receiver like this, you can easily contribute aircraft data to various flight tracking services like FlightRadar24, FlightAware, ADSBHub, OpenSky Network, ADS-B Exchange, ADSB.lol and many others. Despite its age and simplicity, MicroADSB / adsbPIC by Sprut often outperforms many cheap RTL-SDR dongles in ADS-B reception quality and stability. 
+
+The device works perfectly on Raspberry Pi and other Unix-based systems, making it an excellent choice for feeding data to popular aggregators.    
+
 ## Features
 
 - Supports MicroADSB USB receivers (microADSB / adsbPIC)
@@ -216,6 +220,42 @@ Enable debug logging:
 ```bash
 docker-compose up -d -e ADSB_LOG_LEVEL=DEBUG
 ```
+---
+
+## ADS-B Message Monitor ([adsb_message_parser.py](/adsb_message_parser.py))
+
+A real-time monitoring tool for ADS-B messages that provides a formatted display of aircraft surveillance data.
+
+### Features
+- Real-time display of ADS-B messages in a structured table format
+- Message type identification and description
+- Statistical analysis of received messages
+- Support for various ADS-B message formats (DF0, DF4, DF5, DF17, DF20)
+- Filtering of keep-alive messages
+- Session statistics with message type distribution
+
+### Usage
+```bash
+python3 adsb_monitor.py [--host HOST] [--port PORT]
+```
+
+### Arguments
+- `--host`: Server host address (default: localhost)
+- `--port`: Server port number (default: 30002)
+
+### Example Output
+```
+ADS-B Message Monitor
+Connected to localhost:30002
+
+Timestamp               | Type     | Message                     | Description
+------------------------------------------------------------------------------------------
+2025-02-14 15:03:00.012 | 28       | *28000000000000;            | Extended Squitter (DF5)
+```
+
+A real-time monitoring tool for ADS-B messages that provides a formatted display of aircraft surveillance data. Designed for quick testing and debugging of ADS-B receivers with human-readable output, message type identification, and live statistics tracking.
+
+---
 
 ## Contributing
 
