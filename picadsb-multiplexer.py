@@ -35,26 +35,48 @@ import sys
 import time
 import os
 import signal
+import pyModeS as pms
 from datetime import datetime
 from typing import Optional, Dict, Any, List, Tuple
 
 class PicADSBMultiplexer:
     """Main multiplexer class that handles device communication and client connections."""
 
-    # Known ADSB message prefixes
-    ADSB_PREFIXES = [
-        b'*00', b'*02',  # DF0 (Short Air-to-Air ACAS)
-        b'*20',          # DF4 (Surveillance Altitude Reply)
-        b'*21',          # DF4 (Surveillance Identity Reply)
-        b'*5',           # DF5 (Surveillance ID Reply)
-        b'*A',           # DF11 (All-Call Reply)
-        b'*8D',          # DF17 (ADS-B Extended Squitter)
-        b'*8F',          # DF17 (ADS-B Extended Squitter from Non-Transponder)
-        b'*28', b'*29',  # DF20 (Comm-B Altitude/Identity Reply)
-        b'*2A', b'*2B',  # DF20 (Comm-B Message Reply)
-        b'*2C', b'*2D',  # DF20 (Comm-B Message Reply)
-        b'*2E', b'*2F'   # DF20 (Comm-B Message Reply)
-    ]
+    def validate_message(self, msg: bytes) -> bool:
+        """
+        Validate Mode-S message using pyModeS.
+        Returns True if message is valid.
+        """
+        try:
+            # Remove prefix '*' and suffix ';'
+            hex_msg = msg.decode().strip('*;\r\n')
+
+            # Check basic format
+            if not hex_msg or not hex_msg.isalnum():
+                return False
+
+            # Get message length
+            msg_len = len(hex_msg)
+
+            # Mode-S Short (14 bytes) or Long (28 bytes) message
+            if msg_len not in (14, 28):
+                return False
+
+            # Validate CRC
+            if not pms.crc(hex_msg) == 0:
+                return False
+
+            # Get Downlink Format (DF)
+            df = pms.df(hex_msg)
+
+            # Log valid message type
+            self.logger.debug(f"Valid DF{df} message: {hex_msg}")
+
+            return True
+
+        except Exception as e:
+            self.logger.debug(f"Message validation failed: {e}")
+            return False
 
     def __init__(self, tcp_port: int = 30002, serial_port: str = '/dev/ttyACM0', log_level: str = 'INFO'):
         """Initialize the multiplexer."""
@@ -78,7 +100,8 @@ class PicADSBMultiplexer:
             'errors': 0,
             'reconnects': 0,
             'clients_total': 0,
-            'clients_current': 0
+            'clients_current': 0,
+            'messages_dropped': 0
         }
 
         # Timing controls
@@ -88,7 +111,7 @@ class PicADSBMultiplexer:
         self.stats_interval = 60  # 1 minute
 
         # Message handling
-        self.message_queue = queue.Queue(maxsize=1000)
+        self.message_queue = queue.Queue(maxsize=5000)
         self.clients: List[socket.socket] = []
 
         # Initialize interfaces
@@ -280,22 +303,23 @@ class PicADSBMultiplexer:
                 elif byte == b';':  # message end
                     self._buffer += byte
                     if len(self._buffer) > 2:  # check minimum message length
-                        if self.is_adsb_message(self._buffer):
+                        if self.validate_message(self._buffer):
                             try:
+                                # Ensure correct format for dump1090: *MSG;\n
+                                message = self._buffer.rstrip(b'\r\n;') + b';\n'
+
                                 # Send to clients
-                                self.message_queue.put_nowait(self._buffer + b'\n')
+                                self.message_queue.put_nowait(message)
                                 self.stats['messages_processed'] += 1
 
-                                # Print to stdout for compatibility
-                                print(self._buffer.decode().strip(), flush=True)
+                                # Print to stdout for piping
+                                print(message.decode().rstrip(), flush=True)
 
-                                # Log as debug
-                                self.logger.debug(f"ADSB message: {self._buffer[1:-1].decode()}")
                             except queue.Full:
                                 self.logger.warning("Message queue full, dropping message")
                         else:
-                            # Non-ADSB messages to debug log only
-                            self.logger.debug(f"Non-ADSB message: {self._buffer[1:-1].decode()}")
+                            # Invalid messages to debug log only
+                            self.logger.debug(f"Invalid Mode-S message: {self._buffer[1:-1].decode()}")
                     self._buffer = b''
                 else:
                     self._buffer += byte
@@ -310,8 +334,6 @@ class PicADSBMultiplexer:
 
         except Exception as e:
             self.logger.error(f"Error processing serial data: {e}")
-            self.stats['errors'] += 1
-            self._buffer = b''
 
     def _handle_client_connections(self):
         """Handle new client connections and data."""
@@ -396,8 +418,10 @@ class PicADSBMultiplexer:
             self.logger.info(
                 f"Statistics: Messages/min: {messages_per_minute}, "
                 f"Total: {self.stats['messages_processed']}, "
+                f"Dropped: {self.stats['messages_dropped']}, "
                 f"Clients: {self.stats['clients_current']}, "
-                f"Errors: {self.stats['errors']}"
+                f"Errors: {self.stats['errors']}, "
+                f"Queue: {self.message_queue.qsize()}/{self.message_queue.maxsize}"
             )
 
             self.stats['messages_per_minute'] = messages_per_minute
