@@ -42,66 +42,75 @@ from typing import Optional, Dict, Any, List, Tuple
 class PicADSBMultiplexer:
     """Main multiplexer class that handles device communication and client connections."""
 
-    def validate_message(self, msg: bytes) -> bool:
+    def validate_message(self, msg: bytes) -> bool:  
         """
-        Validate Mode-S message with minimal restrictions to accept maximum valid messages.
-        Only obviously corrupted messages will be filtered out.
+        Validate Mode-S and Mode-A/C messages on 1090 MHz frequency.
+        Optimized for aviation-specific messages with minimal filtering.
 
         Args:
-            msg (bytes): Raw message received from the device
+            msg (bytes): Raw message from 1090 MHz receiver
 
         Returns:
-            bool: True if message passes basic validation, False otherwise
+            bool: True if message appears to be valid aviation data
         """
         try:
-            # Remove any special characters and whitespace
+            # Clean up received message
             hex_msg = msg.decode().strip('*;\r\n')
 
-            # Basic checks for empty messages or non-hex characters
+            # Basic format check
             if not hex_msg:
                 self.logger.debug("Empty message rejected")
                 return False
 
-            # Check if string contains only valid hexadecimal characters
+            # Verify hexadecimal format
             if not all(c in '0123456789ABCDEFabcdef' for c in hex_msg):
                 self.logger.debug(f"Non-hex characters in message: {hex_msg}")
                 return False
 
-            # Check message length (14 for short messages, 28 for long messages)
+            # Check aviation message length
             msg_len = len(hex_msg)
-            if msg_len not in (14, 28):
-                self.logger.debug(f"Invalid message length ({msg_len}): {hex_msg}")
+            if msg_len not in (14, 28):  # Short (56 bits) or Long (112 bits) Mode-S
+                self.logger.debug(f"Non-standard message length ({msg_len}): {hex_msg}")
                 return False
 
-            # Get Downlink Format (DF)
+            # Decode Downlink Format
             try:
                 df = pms.df(hex_msg)
             except:
-                self.logger.debug(f"Cannot decode DF from message: {hex_msg}")
+                self.logger.debug(f"Unable to decode DF from message: {hex_msg}")
                 return False
 
-            # Special handling for different message types
-            if df == 17:  # ADS-B messages
-                # Strict CRC check only for ADS-B messages
+            # Aviation message type validation
+            if df == 17:  # ADS-B
+                # Full validation for ADS-B
                 if not pms.crc(hex_msg):
-                    self.logger.debug(f"Invalid CRC for DF17 message: {hex_msg}")
+                    self.logger.debug(f"Invalid ADS-B message CRC: {hex_msg}")
                     return False
-            elif df in [0, 4, 5, 11, 16, 20, 21, 24, 28]:
-                # These DF types are common and valid
-                # No strict CRC check to accept more messages
-                pass
-            else:
-                # Accept any other DF type that made it through basic validation
-                # This is very permissive but allows for maximum reception  
-                pass
 
-            # Log accepted message
-            self.logger.debug(f"Valid DF{df} message accepted: {hex_msg}")
+            elif df in [0]:  # Short ACAS
+                pass  # Accept all ACAS
+
+            elif df in [4, 5]:  # Altitude and Identity replies
+                pass  # Accept all altitude/identity data
+
+            elif df in [11]:  # All-call replies
+                pass  # Accept all all-call replies
+
+            elif df in [16]:  # Long ACAS
+                pass  # Accept all TCAS
+
+            elif df in [20, 21]:  # Comm-B altitude/identity
+                pass  # Accept all Mode-S communications
+
+            elif df in [24, 28]:  # Comm-D ELM
+                pass  # Accept Extended Length Messages
+
+            # Log accepted aviation message
+            self.logger.debug(f"Valid aviation message DF{df}: {hex_msg}")
             return True
 
         except Exception as e:
-            # Log any unexpected errors during validation
-            self.logger.debug(f"Message validation failed: {str(e)}, Message: {msg}")
+            self.logger.debug(f"Validation error: {str(e)}, Message: {msg}")
             return False
 
     def __init__(self, tcp_port: int = 30002, serial_port: str = '/dev/ttyACM0', log_level: str = 'INFO'):
