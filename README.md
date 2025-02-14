@@ -3,7 +3,8 @@
 <img src="assets/images/IMG_8767.jpg" alt="MicroADSB | adsbPIC by Sprut" style="width: 35%; max-width: 1140px; max-height: 960px; aspect-ratio: 19/16; object-fit: contain;"/><img src="assets/images/IMG_8769.jpg" alt="MicroADSB | adsbPIC by Sprut" style="width: 35%; max-width: 1140px; max-height: 960px; aspect-ratio: 19/16; object-fit: contain;"/><img src="assets/images/IMG_8771.jpg" alt="MicroADSB | adsbPIC by Sprut" style="width: 35%; max-width: 1140px; max-height: 960px; aspect-ratio: 19/16; object-fit: contain;"/><img src="assets/images/IMG_8772.jpg" alt="MicroADSB | adsbPIC by Sprut" style="width: 35%; max-width: 1140px; max-height: 960px; aspect-ratio: 19/16; object-fit: contain;"/>
 
 
-A Docker-based TCP multiplexer for MicroADSB (adsbPIC) USB receivers that allows sharing ADS-B data with multiple clients (like dump1090).
+A Docker-based TCP multiplexer for MicroADSB (adsbPIC) USB receivers that allows sharing ADS-B data with multiple clients (like dump1090).   
+ⓘ Can also be used without Docker as a system service using Python environment only, instructions [available here](#direct-python-installation-and-usage-without-docker).
 
 If you have a USB ADS-B receiver like this, you can easily contribute aircraft data to various flight tracking services like FlightRadar24, FlightAware, ADSBHub, OpenSky Network, ADS-B Exchange, ADSB.lol and many others. Despite its age and simplicity, MicroADSB / adsbPIC by Sprut often outperforms many cheap RTL-SDR dongles in ADS-B reception quality and stability.
 
@@ -264,6 +265,116 @@ Timestamp               | Type     | Message                     | Description
 ```
 
 A real-time monitoring tool for ADS-B messages that provides a formatted display of aircraft surveillance data. Designed for quick testing and debugging of ADS-B receivers with human-readable output, message type identification, and live statistics tracking.
+
+---
+
+### Direct Python Installation and Usage (Without Docker)
+
+#### Quick Start
+
+1. Clone the repository:
+```bash
+git clone https://github.com/smkrv/picadsb-multiplexer/tree/main
+cd picadsb-multiplexer
+```
+
+2. Install required dependency:
+```bash
+pip3 install pyserial
+```
+
+#### Device Setup (Recommended)
+
+Create persistent device name with udev rule:
+```bash
+sudo nano /etc/udev/rules.d/99-picadsb.rules
+```
+Add rule for automatic device recognition:
+```
+SUBSYSTEM=="tty", ATTRS{idVendor}=="04d8", ATTRS{idProduct}=="000a", SYMLINK+="ttyACM0"
+```
+Apply new rule:
+```bash
+sudo udevadm control --reload-rules
+```
+
+#### Usage
+
+#### Basic Operation
+
+Start the multiplexer:
+```bash
+python3 picadsb-multiplexer.py --port 30002 --device /dev/ttyACM0
+```
+
+#### Testing Reception
+
+Verify data flow using included test client:
+```bash
+python3 adsb_message_parser.py [--host localhost] [--port 30002]
+```
+
+#### Integration with dump1090
+
+Connect to multiplexer using dump1090:
+```bash
+dump1090 --net-only --net-ri-port 30002
+```
+
+#### Running as System Service
+
+#### Service Setup
+
+1. Create systemd service file:
+```bash
+sudo nano /etc/systemd/system/picadsbmultiplexer.service
+```
+
+2. Configure service:
+```ini
+[Unit]
+Description=picadsbmultiplexer TCP Bridge
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/python3 /path/to/picadsb-multiplexer.py --port 30002 --device /dev/ttyACM0
+WorkingDirectory=/path/to/script/directory
+StandardOutput=append:/var/log/picadsbmultiplexer.log
+StandardError=append:/var/log/picadsbmultiplexer.error.log
+Restart=always
+User=your_username
+
+[Install]
+WantedBy=multi-user.target
+```
+
+#### Service Management
+
+Enable and start:
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable picadsbmultiplexer
+sudo systemctl start picadsbmultiplexer
+```
+
+Check status:
+```bash
+sudo systemctl status picadsbmultiplexer
+```
+
+#### Monitoring
+
+#### Log Access
+
+Service logs:
+```bash
+sudo journalctl -u picadsbmultiplexer -f
+```
+
+Application logs:
+```bash
+tail -f logs/adsb_muxer_*.log
+```
 
 ---
 
