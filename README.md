@@ -282,6 +282,7 @@ cd picadsb-multiplexer
 2. Install required dependency:
 ```bash
 pip3 install pyserial
+pip3 install pyModeS
 ```
 
 #### Device Setup (Recommended)
@@ -392,6 +393,7 @@ tail -f logs/adsb_muxer_*.log
 - Original adsbPIC creator & firmware by [Sprut](https://sprut.de)
 - Original MicroADSB device by Miroslav Ionov
 - [dump1090](https://github.com/antirez/dump1090) project for ADS-B decoding
+- [pyModeS](https://github.com/junzis/pyModeS) for message filtering and validation  
 
 ## Legal Disclaimer and Limitation of Liability  
 
