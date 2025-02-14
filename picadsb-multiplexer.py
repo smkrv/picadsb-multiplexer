@@ -36,39 +36,50 @@ import time
 import os
 import signal
 from datetime import datetime
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List, Tuple
 import threading
 
-class picADSB_multiplexer:
+class PicADSBMultiplexer:
     """
     Main multiplexer class that handles device communication and client connections.
-
-    Attributes:
-        tcp_port (int): TCP port for client connections
-        serial_port (str): Serial port device path
-        stats (dict): Runtime statistics
-        clients (list): Connected TCP clients
-        running (bool): Main loop control flag
-        keepalive_interval (float): Interval between keepalive messages
-        keepalive_message (bytes): Keepalive message format
+    Implements specific protocol for MicroADSB / adsbPIC devices.
     """
+
+    # Known ADSB message prefixes
+    ADSB_PREFIXES = [
+        b'*00', b'*02',  # DF0 (Short Air-to-Air ACAS)
+        b'*20',          # DF4 (Surveillance Altitude Reply)
+        b'*21',          # DF4 (Surveillance Identity Reply)
+        b'*5',           # DF5 (Surveillance ID Reply)
+        b'*A',           # DF11 (All-Call Reply)
+        b'*8D',          # DF17 (ADS-B Extended Squitter)
+        b'*8F',          # DF17 (ADS-B Extended Squitter from Non-Transponder)
+        b'*28', b'*29',  # DF20 (Comm-B Altitude/Identity Reply)
+        b'*2A', b'*2B',  # DF20 (Comm-B Message Reply)
+        b'*2C', b'*2D',  # DF20 (Comm-B Message Reply)
+        b'*2E', b'*2F'   # DF20 (Comm-B Message Reply)
+    ]
 
     def __init__(self, tcp_port: int = 30002, serial_port: str = '/dev/ttyACM0', log_level: str = 'INFO'):
         """
         Initialize the multiplexer.
 
         Args:
-            tcp_port: TCP port number for client connections
+            tcp_port: TCP port for client connections
             serial_port: Serial port device path
             log_level: Logging level (DEBUG, INFO, WARNING, ERROR)
         """
         self.tcp_port = tcp_port
         self.serial_port = serial_port
-
-        # Setup logging with specified level
         self._setup_logging(log_level)
 
-        # Initialize statistics
+        # Runtime state
+        self.running = True
+        self.firmware_version = None
+        self.device_id = None
+        self._buffer = b''
+
+        # Statistics
         self.stats = {
             'messages_processed': 0,
             'messages_per_minute': 0,
@@ -76,261 +87,283 @@ class picADSB_multiplexer:
             'last_minute_count': 0,
             'last_minute_time': time.time(),
             'errors': 0,
-            'keepalives_sent': 0
+            'reconnects': 0,
+            'clients_total': 0,
+            'clients_current': 0
         }
 
-        # Initialize message queue and client list
+        # Timing controls
+        self.last_version_check = time.time()
+        self.version_check_interval = 300  # 5 minutes
+        self.last_stats_update = time.time()
+        self.stats_interval = 60  # 1 minute
+
+        # Message handling
         self.message_queue = queue.Queue(maxsize=1000)  # Buffer for 1000 messages
-        self.clients = []
-        self.running = True
+        self.clients: List[socket.socket] = []
 
-        # Keepalive configuration
-        self.keepalive_interval = 5.0  # seconds
-        self.last_keepalive_time = time.time()
-        self.keepalive_message = b"*0000;\r\n"  # Null ADSB message as keepalive
-        self.last_data_time = time.time()
-        self.data_timeout = 30.0  # seconds before sending keepalive
-
-        # TCP socket options for keepalive
-        self.tcp_keepalive_options = {
-            socket.SO_KEEPALIVE: 1,    # Enable keepalive
-            socket.TCP_KEEPIDLE: 60,   # Start sending keepalive after 60 seconds of idle
-            socket.TCP_KEEPINTVL: 10,  # Send keepalive every 10 seconds
-            socket.TCP_KEEPCNT: 5      # Drop connection after 5 failed keepalives
-        }
-
-        # Initialize network and serial interfaces
+        # Initialize interfaces
         self._init_socket()
         self._init_serial()
 
-        # Setup signal handlers for graceful shutdown
+        # Setup signal handlers
         signal.signal(signal.SIGINT, self._signal_handler)
         signal.signal(signal.SIGTERM, self._signal_handler)
 
-    def _setup_logging(self, log_level: str = 'INFO'):
-        """
-        Configure logging with both file and console output.
-
-        Args:
-            log_level: Logging level (DEBUG, INFO, WARNING, ERROR)
-        """
-        # Convert string level to logging constant
+    def _setup_logging(self, log_level: str):
+        """Configure logging with both file and console output."""
         numeric_level = getattr(logging, log_level.upper(), None)
         if not isinstance(numeric_level, int):
             raise ValueError(f'Invalid log level: {log_level}')
 
-        self.logger = logging.getLogger('picADSB_multiplexer')
+        self.logger = logging.getLogger('PicADSB')
         self.logger.setLevel(numeric_level)
 
-        # Create logs directory if needed
+        # Create logs directory
         os.makedirs('logs', exist_ok=True)
 
-        # File handler for detailed logging
-        fh = logging.FileHandler(f'logs/picadsb-multiplexer_{datetime.now():%Y%m%d_%H%M%S}.log')
-        fh.setLevel(numeric_level)
+        # File handler
+        fh = logging.FileHandler(
+            f'logs/picadsb_{datetime.now():%Y%m%d_%H%M%S}.log'
+        )
+        fh.setLevel(logging.DEBUG)
+        fh.setFormatter(logging.Formatter(
+            '%(asctime)s.%(msecs)03d - %(name)s - %(levelname)s - %(message)s',
+            '%Y-%m-%d %H:%M:%S'
+        ))
 
-        # Console handler for important messages
+        # Console handler
         ch = logging.StreamHandler()
         ch.setLevel(numeric_level)
-
-        # Formatting
-        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-        fh.setFormatter(formatter)
-        ch.setFormatter(formatter)
+        ch.setFormatter(logging.Formatter(
+            '%(asctime)s.%(msecs)03d - %(levelname)s - %(message)s',
+            '%Y-%m-%d %H:%M:%S'
+        ))
 
         self.logger.addHandler(fh)
         self.logger.addHandler(ch)
 
+    def format_command(self, cmd_bytes: bytes) -> bytes:
+        """
+        Format command according to device protocol.
+
+        Args:
+            cmd_bytes: Raw command bytes
+
+        Returns:
+            Formatted command string with prefix and terminator
+        """
+        cmd_str = '-'.join([f"{b:02X}" for b in cmd_bytes])
+        return f"#{cmd_str}\r".encode()
+
+    def verify_response(self, cmd: bytes, response: bytes) -> bool:
+        """
+        Verify device response to command.
+
+        Args:
+            cmd: Original command bytes
+            response: Response received from device
+
+        Returns:
+            True if response is valid, False otherwise
+        """
+        if not response:
+            return False
+
+        # Remove prefix '#' and split into bytes
+        resp_bytes = [int(x, 16) for x in response[1:].decode().strip('-').split('-')]
+
+        # Version command response
+        if cmd[0] == 0x00:
+            return resp_bytes[0] == 0x00 and resp_bytes[2] == 0x05
+
+        # Mode set command response
+        elif cmd[0] == 0x43:
+            return resp_bytes[0] == 0x43 and resp_bytes[1] == cmd[1]
+
+        # Filter command response
+        elif cmd[0] == 0x37:
+            return resp_bytes[0] == 0x37 and resp_bytes[1] == cmd[1]
+
+        # Start command response
+        elif cmd[0] == 0x38:
+            return resp_bytes[0] == 0x38 and resp_bytes[2] == 0x01
+
+        return True
+
     def _init_socket(self):
-        """Initialize TCP server socket with keepalive support."""
+        """Initialize TCP server socket with error handling."""
         try:
             self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-
-            # Set TCP keepalive options
-            for option, value in self.tcp_keepalive_options.items():
-                try:
-                    self.server_socket.setsockopt(socket.SOL_TCP, option, value)
-                except:
-                    self.logger.warning(f"Failed to set TCP keepalive option {option}")
-
             self.server_socket.bind(('', self.tcp_port))
             self.server_socket.listen(5)
             self.server_socket.setblocking(False)
-            self.logger.info(f"Listening on TCP port {self.tcp_port}")
+            self.logger.info(f"TCP server listening on port {self.tcp_port}")
         except Exception as e:
             self.logger.error(f"Failed to initialize socket: {e}")
             raise
 
     def _init_serial(self):
-        """Initialize serial port and device configuration."""
+        """Initialize serial port and perform device initialization sequence."""
         try:
             self.ser = serial.Serial(
                 port=self.serial_port,
                 baudrate=115200,
-                timeout=0.1
+                bytesize=serial.EIGHTBITS,
+                parity=serial.PARITY_NONE,
+                stopbits=serial.STOPBITS_ONE,
+                timeout=1
             )
 
             # Clear buffers
             self.ser.reset_input_buffer()
             self.ser.reset_output_buffer()
 
-            # Initialize device
-            self._initialize_device()
+            # Initialize CDC
+            self.ser.setDTR(False)
+            self.ser.setRTS(False)
+            time.sleep(0.1)
+            self.ser.setDTR(True)
+            self.ser.setRTS(True)
+            time.sleep(0.1)
 
-            self.logger.info(f"Serial port {self.serial_port} initialized")
+            # Perform device initialization
+            if not self._initialize_device():
+                raise Exception("Device initialization failed")
+
+            self.logger.info(f"Serial port {self.serial_port} initialized successfully")
+
         except Exception as e:
             self.logger.error(f"Failed to initialize serial port: {e}")
             raise
 
-    def _initialize_device(self):
+    def _initialize_device(self) -> bool:
         """
-        Initialize ADS-B device with proper command sequence.
-
-        Command sequence:
-        1. Stop decoding
-        2. Set mode 2 (all frames)
-        3. Enable timestamp
-        4. Start reception
+        Initialize device with specific command sequence.
+        Returns True if initialization successful, False otherwise.
         """
-        init_sequence = [
-            (b'#43-00\r', "Stop decoding"),
-            (b'#51-01-00\r', "Set mode"),
-            (b'#37-03\r', "Set filter"),
-            (b'#43-00\r', "Status check"),
-            (b'#51-00-00\r', "Reset mode"),
-            (b'#37-03\r', "Set filter"),
-            (b'#38\r', "Start reception")
+        commands = [
+            (b'\x00', "Version request"),
+            (b'\x43\x00', "Stop reception"),
+            (b'\x51\x01\x00', "Set mode"),
+            (b'\x37\x03', "Set filter"),
+            (b'\x43\x00', "Status check 1"),
+            (b'\x43\x00', "Status check 2"),
+            (b'\x51\x00\x00', "Reset mode"),
+            (b'\x37\x03', "Set filter"),
+            (b'\x43\x00', "Final status check"),
+            (b'\x38', "Start reception")
         ]
 
-        for cmd, desc in init_sequence:
-            try:
-                self.logger.debug(f"Sending {desc} command: {cmd!r}")
-                self.ser.write(cmd)
-                time.sleep(0.1)
-                response = self.ser.read_all()
-                self.logger.debug(f"{desc} response: {response!r}")
-            except Exception as e:
-                self.logger.error(f"Error during {desc}: {e}")
-                raise
+        for cmd, desc in commands:
+            self.logger.debug(f"Sending {desc}: {cmd.hex()}")
+            formatted_cmd = self.format_command(cmd)
+            self.ser.write(formatted_cmd)
+            time.sleep(0.1)
 
-    def _update_stats(self):
-        """Update and log message processing statistics."""
-        current_time = time.time()
-        if current_time - self.stats['last_minute_time'] >= 60:
-            messages_per_minute = self.stats['messages_processed'] - self.stats['last_minute_count']
-            self.stats['messages_per_minute'] = messages_per_minute
-            self.stats['last_minute_count'] = self.stats['messages_processed']
-            self.stats['last_minute_time'] = current_time
+            response = self._read_response()
+            if response:
+                self.logger.debug(f"Response to {desc}: {response}")
+                if not self.verify_response(cmd, response):
+                    self.logger.error(f"Invalid response to {desc}")
+                    return False
+            else:
+                self.logger.warning(f"No response to {desc}")
+                return False
 
-            self.logger.info(
-                f"Statistics: Messages/min: {messages_per_minute}, "
-                f"Total: {self.stats['messages_processed']}, "
-                f"Keepalives: {self.stats['keepalives_sent']}, "
-                f"Errors: {self.stats['errors']}"
-            )
+        return True
+
+    def _read_response(self) -> Optional[bytes]:
+        """
+        Read response from device with timeout.
+        Returns response bytes or None if timeout occurred.
+        """
+        buffer = b''
+        timeout = time.time() + 1.0  # 1 second timeout
+
+        while time.time() < timeout:
+            if self.ser.in_waiting:
+                byte = self.ser.read()
+                if byte == b'#' or byte == b'*':  # message start
+                    buffer = byte
+                elif byte in [b'\r', b'\n']:  # message end
+                    if buffer:
+                        return buffer
+                else:
+                    buffer += byte
+            time.sleep(0.01)
+        return None
+
+    def is_adsb_message(self, msg: bytes) -> bool:
+        """Check if message is valid ADSB format."""
+        return any(msg.startswith(prefix) for prefix in self.ADSB_PREFIXES)
+
+    def _process_serial_data(self):
+        """Process incoming data from the ADSB device."""
+        try:
+            if self.ser.in_waiting:
+                data = self.ser.read(self.ser.in_waiting)
+                if data:
+                    self._buffer += data
+
+                    while b';' in self._buffer:
+                        message, self._buffer = self._buffer.split(b';', 1)
+                        message += b';'
+
+                        if len(message) <= 2:  # Skip empty messages
+                            continue
+
+                        if message.startswith((b'*', b'#')):
+                            if self.is_adsb_message(message):
+                                try:
+                                    self.message_queue.put_nowait(message + b'\n')
+                                    self.stats['messages_processed'] += 1
+                                    self.logger.debug(f"ADSB message: {message.decode().strip()}")
+                                except queue.Full:
+                                    self.logger.warning("Message queue full, dropping message")
+                            else:
+                                self.logger.debug(f"Non-ADSB message: {message.decode().strip()}")
+
+                    # Limit buffer size
+                    if len(self._buffer) > 1024:
+                        self._buffer = b''
+                        self.logger.warning("Buffer overflow, cleared")
+
+        except Exception as e:
+            self.logger.error(f"Error processing serial data: {e}")
+            self.stats['errors'] += 1
+            self._buffer = b''
 
     def _handle_client_connections(self):
-        """Handle new client connections and set keepalive options."""
+        """Handle new client connections and data."""
         try:
             readable, _, _ = select.select([self.server_socket] + self.clients, [], [], 0.1)
 
             for sock in readable:
                 if sock is self.server_socket:
-                    # New connection
                     client_socket, address = self.server_socket.accept()
                     client_socket.setblocking(False)
-
-                    # Set keepalive options for new client
-                    for option, value in self.tcp_keepalive_options.items():
-                        try:
-                            client_socket.setsockopt(socket.SOL_TCP, option, value)
-                        except:
-                            self.logger.warning(f"Failed to set keepalive option {option} for {address}")
-
                     self.clients.append(client_socket)
+                    self.stats['clients_total'] += 1
+                    self.stats['clients_current'] = len(self.clients)
                     self.logger.info(f"New client connected from {address}")
                 else:
-                    # Handle existing client
                     try:
                         data = sock.recv(1024)
-                        if not data:
+                        if not data:  # Client disconnected
                             self.clients.remove(sock)
                             sock.close()
-                            self.logger.info(f"Client {sock.getpeername()} disconnected")
+                            self.stats['clients_current'] = len(self.clients)
+                            self.logger.info("Client disconnected")
                     except:
-                        try:
-                            self.clients.remove(sock)
-                            sock.close()
-                            self.logger.info(f"Client connection lost")
-                        except:
-                            pass
+                        self.clients.remove(sock)
+                        sock.close()
+                        self.stats['clients_current'] = len(self.clients)
+                        self.logger.info("Client connection lost")
+
         except Exception as e:
             self.logger.error(f"Error handling client connections: {e}")
-
-    def _send_keepalive(self):
-        """
-        Send keepalive messages to all connected clients.
-        Sends keepalive if no data has been received for data_timeout seconds
-        and last keepalive was sent more than keepalive_interval seconds ago.
-        """
-        current_time = time.time()
-
-        if (current_time - self.last_data_time >= self.data_timeout and
-            current_time - self.last_keepalive_time >= self.keepalive_interval):
-
-            disconnected_clients = []
-            for client in self.clients:
-                try:
-                    client.send(self.keepalive_message)
-                    self.stats['keepalives_sent'] += 1
-                    self.logger.debug(f"Sent keepalive to {client.getpeername()}")
-                except:
-                    disconnected_clients.append(client)
-                    self.logger.warning(f"Failed to send keepalive, marking client for removal")
-
-            # Remove disconnected clients
-            for client in disconnected_clients:
-                try:
-                    self.clients.remove(client)
-                    client.close()
-                    self.logger.info(f"Removed disconnected client")
-                except:
-                    pass
-
-            self.last_keepalive_time = current_time
-
-    def _process_serial_data(self):
-        """
-        Process incoming data from the ADS-B device.
-        Updates last_data_time when real data is received.
-        """
-        try:
-            if self.ser.in_waiting:
-                data = self.ser.read_all()
-                if data:
-                    self.logger.debug(f"Raw data received: {data!r}")
-
-                    # Update last data time
-                    self.last_data_time = time.time()
-
-                    # Split into individual messages
-                    messages = data.split(b';')
-                    for msg in messages:
-                        if msg.startswith(b'*'):
-                            # Add terminator and queue message
-                            full_msg = msg + b';'
-                            try:
-                                self.message_queue.put_nowait(full_msg)
-                                self.stats['messages_processed'] += 1
-                                self.logger.debug(f"Processed message: {full_msg!r}")
-                            except queue.Full:
-                                self.logger.warning("Message queue full, dropping message")
-                        else:
-                            self.logger.debug(f"Skipped non-ADSB message: {msg!r}")
-        except Exception as e:
-            self.logger.error(f"Error processing serial data: {e}")
-            self.stats['errors'] += 1
 
     def _broadcast_messages(self):
         """Broadcast queued messages to all connected clients."""
@@ -345,66 +378,94 @@ class picADSB_multiplexer:
                     except:
                         disconnected_clients.append(client)
 
-                # Remove disconnected clients
                 for client in disconnected_clients:
                     try:
                         self.clients.remove(client)
                         client.close()
+                        self.stats['clients_current'] = len(self.clients)
                     except:
                         pass
+
         except Exception as e:
             self.logger.error(f"Error broadcasting messages: {e}")
 
+    def _check_device_version(self):
+        """Periodic device version check."""
+        current_time = time.time()
+        if current_time - self.last_version_check >= self.version_check_interval:
+            self.logger.debug("Performing periodic version check")
+            self.ser.write(self.format_command(b'\x00'))
+            response = self._read_response()
+
+            if not response or not self.verify_response(b'\x00', response):
+                self.logger.error("Version check failed, attempting reconnect")
+                if not self._reconnect():
+                    self.running = False
+            else:
+                self.logger.debug("Version check successful")
+
+            self.last_version_check = current_time
+
+    def _reconnect(self) -> bool:
+        """
+        Attempt to reconnect to the device.
+        Returns True if successful, False otherwise.
+        """
+        self.logger.info("Attempting to reconnect...")
+        retry_count = 3
+
+        for attempt in range(retry_count):
+            try:
+                self.ser.close()
+                time.sleep(2)
+                self._init_serial()
+                self.stats['reconnects'] += 1
+                return True
+            except Exception as e:
+                self.logger.error(f"Reconnection attempt {attempt + 1} failed: {e}")
+                time.sleep(5)
+
+        return False
+
     def _signal_handler(self, signum, frame):
-        """Handle shutdown signals (SIGINT, SIGTERM)."""
+        """Handle shutdown signals."""
         self.logger.info(f"Received signal {signum}, shutting down...")
         self.running = False
 
     def run(self):
-        """
-        Main operation loop.
-
-        Handles:
-        - Client connections
-        - Message reception
-        - Message broadcasting
-        - Keepalive messages
-        - Statistics updates
-        """
+        """Main operation loop."""
         self.logger.info("Starting ADS-B multiplexer")
 
         try:
             while self.running:
+                self._check_device_version()
                 self._handle_client_connections()
                 self._process_serial_data()
                 self._broadcast_messages()
-                self._send_keepalive()
-                self._update_stats()
                 time.sleep(0.001)  # Prevent CPU overload
 
+        except KeyboardInterrupt:
+            self.logger.info("Keyboard interrupt received")
         except Exception as e:
             self.logger.error(f"Error in main loop: {e}")
         finally:
             self.cleanup()
 
     def cleanup(self):
-        """Clean up resources and connections on shutdown."""
+        """Clean up resources on shutdown."""
         self.logger.info("Cleaning up...")
 
-        # Close client connections
         for client in self.clients:
             try:
                 client.close()
             except:
                 pass
 
-        # Close server socket
         try:
             self.server_socket.close()
         except:
             pass
 
-        # Close serial port
         try:
             self.ser.close()
         except:
@@ -413,15 +474,10 @@ class picADSB_multiplexer:
         self.logger.info("Cleanup complete")
 
 def main():
-    """
-    Entry point with command line argument parsing.
-
-    Usage:
-        picadsb-multiplexer.py [--port PORT] [--device DEVICE] [--log LEVEL]
-    """
+    """Entry point with command line argument parsing."""
     import argparse
 
-    parser = argparse.ArgumentParser(description='ADS-B Multiplexer')
+    parser = argparse.ArgumentParser(description='ADS-B Multiplexer for MicroADSB/adsbPIC devices')
     parser.add_argument('--port', type=int, default=30002,
                       help='TCP port number (default: 30002)')
     parser.add_argument('--device', type=str, default='/dev/ttyACM0',
@@ -433,7 +489,7 @@ def main():
     args = parser.parse_args()
 
     try:
-        muxer = picADSB_multiplexer(
+        muxer = PicADSBMultiplexer(
             tcp_port=args.port,
             serial_port=args.device,
             log_level=args.log
