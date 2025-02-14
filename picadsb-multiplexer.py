@@ -42,7 +42,7 @@ from typing import Optional, Dict, Any, List, Tuple
 class PicADSBMultiplexer:
     """Main multiplexer class that handles device communication and client connections."""
 
-    def validate_message(self, msg: bytes) -> bool:  
+    def validate_message(self, msg: bytes) -> bool:
         """
         Validate Mode-S and Mode-A/C messages on 1090 MHz frequency.
         Optimized for aviation-specific messages with minimal filtering.
@@ -323,52 +323,65 @@ class PicADSBMultiplexer:
         """Check if message is valid ADSB format."""
         return any(msg.startswith(prefix) for prefix in self.ADSB_PREFIXES)
 
-    def _process_serial_data(self):
-        """Process incoming data from the ADSB device byte by byte."""
+    def _process_serial_data(self):  
+        """
+        Process incoming data from the ADSB device and format it for dump1090.
+        dump1090 expects messages in specific formats:
+        - For Mode-S/ADS-B: *HEX_MESSAGE;\n
+        """
         try:
             if self.ser.in_waiting:
                 byte = self.ser.read()
 
-                # Skip single \r and \n
+                # Skip standalone line endings
                 if byte in [b'\r', b'\n']:
                     return
 
-                if byte in [b'#', b'*']:  # message start
+                if byte in [b'#', b'*']:  # Message start markers
                     self._buffer = byte
-                elif byte == b';':  # message end
+                elif byte == b';':  # Message end marker
                     self._buffer += byte
-                    if len(self._buffer) > 2:  # check minimum message length
+
+                    if len(self._buffer) > 2:  # Minimum valid message length
                         if self.validate_message(self._buffer):
                             try:
-                                # Ensure correct format for dump1090: *MSG;\n
-                                message = self._buffer.rstrip(b'\r\n;') + b';\n'
+                                # Format message for dump1090
+                                # 1. Strip any existing terminators
+                                # 2. Ensure message starts with '*'
+                                # 3. End with ';\n'
+                                clean_msg = self._buffer.rstrip(b'\r\n;')
+                                if clean_msg.startswith(b'#'):
+                                    clean_msg = b'*' + clean_msg[1:]
+                                formatted_msg = clean_msg + b';\n'
 
-                                # Send to clients
-                                self.message_queue.put_nowait(message)
+                                # Send to connected clients
+                                self.message_queue.put_nowait(formatted_msg)
                                 self.stats['messages_processed'] += 1
 
-                                # Print to stdout for piping
-                                print(message.decode().rstrip(), flush=True)
+                                # Output for piping to dump1090
+                                print(formatted_msg.decode().rstrip(), flush=True)
 
                             except queue.Full:
                                 self.logger.warning("Message queue full, dropping message")
                         else:
-                            # Invalid messages to debug log only
+                            # Log invalid messages for debugging
                             self.logger.debug(f"Invalid Mode-S message: {self._buffer[1:-1].decode()}")
                     self._buffer = b''
                 else:
                     self._buffer += byte
 
-                # Limit buffer size
-                if len(self._buffer) > 100:
+                # Safety limit for buffer size
+                if len(self._buffer) > 100:  # Maximum reasonable message length
+                    self.logger.debug(f"Buffer overflow, clearing: {self._buffer}")
                     self._buffer = b''
 
             else:
-                # If no data, small delay
+                # Prevent CPU overload when no data
                 time.sleep(0.01)
 
         except Exception as e:
             self.logger.error(f"Error processing serial data: {e}")
+            self.logger.exception(e)  # Log full traceback for debugging
 
     def _handle_client_connections(self):
         """Handle new client connections and data."""
