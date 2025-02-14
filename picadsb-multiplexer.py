@@ -53,19 +53,20 @@ class picADSB_multiplexer:
         keepalive_message (bytes): Keepalive message format
     """
 
-    def __init__(self, tcp_port: int = 30002, serial_port: str = '/dev/ttyACM0'):
+    def __init__(self, tcp_port: int = 30002, serial_port: str = '/dev/ttyACM0', log_level: str = 'INFO'):
         """
         Initialize the multiplexer.
 
         Args:
             tcp_port: TCP port number for client connections
             serial_port: Serial port device path
+            log_level: Logging level (DEBUG, INFO, WARNING, ERROR)
         """
         self.tcp_port = tcp_port
         self.serial_port = serial_port
 
-        # Setup logging
-        self._setup_logging()
+        # Setup logging with specified level
+        self._setup_logging(log_level)
 
         # Initialize statistics
         self.stats = {
@@ -106,21 +107,31 @@ class picADSB_multiplexer:
         signal.signal(signal.SIGINT, self._signal_handler)
         signal.signal(signal.SIGTERM, self._signal_handler)
 
-    def _setup_logging(self):
-        """Configure logging with both file and console output."""
+    def _setup_logging(self, log_level: str = 'INFO'):
+        """
+        Configure logging with both file and console output.
+
+        Args:
+            log_level: Logging level (DEBUG, INFO, WARNING, ERROR)
+        """
+        # Convert string level to logging constant
+        numeric_level = getattr(logging, log_level.upper(), None)
+        if not isinstance(numeric_level, int):
+            raise ValueError(f'Invalid log level: {log_level}')
+
         self.logger = logging.getLogger('picADSB_multiplexer')
-        self.logger.setLevel(logging.DEBUG)
+        self.logger.setLevel(numeric_level)
 
         # Create logs directory if needed
         os.makedirs('logs', exist_ok=True)
 
         # File handler for detailed logging
         fh = logging.FileHandler(f'logs/picadsb-multiplexer_{datetime.now():%Y%m%d_%H%M%S}.log')
-        fh.setLevel(logging.DEBUG)
+        fh.setLevel(numeric_level)
 
         # Console handler for important messages
         ch = logging.StreamHandler()
-        ch.setLevel(logging.INFO)
+        ch.setLevel(numeric_level)
 
         # Formatting
         formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -171,7 +182,7 @@ class picADSB_multiplexer:
         except Exception as e:
             self.logger.error(f"Failed to initialize serial port: {e}")
             raise
-            
+
     def _initialize_device(self):
         """
         Initialize ADS-B device with proper command sequence.
@@ -184,17 +195,21 @@ class picADSB_multiplexer:
         """
         init_sequence = [
             (b'#43-00\r', "Stop decoding"),
-            (b'#43-02\r', "Set mode 2"),
-            (b'#43-16\r', "Enable timestamp"),
+            (b'#51-01-00\r', "Set mode"),
+            (b'#37-03\r', "Set filter"),
+            (b'#43-00\r', "Status check"),
+            (b'#51-00-00\r', "Reset mode"),
+            (b'#37-03\r', "Set filter"),
             (b'#38\r', "Start reception")
         ]
 
         for cmd, desc in init_sequence:
             try:
+                self.logger.debug(f"Sending {desc} command: {cmd!r}")
                 self.ser.write(cmd)
                 time.sleep(0.1)
                 response = self.ser.read_all()
-                self.logger.debug(f"{desc} response: {response}")
+                self.logger.debug(f"{desc} response: {response!r}")
             except Exception as e:
                 self.logger.error(f"Error during {desc}: {e}")
                 raise
@@ -294,6 +309,8 @@ class picADSB_multiplexer:
             if self.ser.in_waiting:
                 data = self.ser.read_all()
                 if data:
+                    self.logger.debug(f"Raw data received: {data!r}")
+
                     # Update last data time
                     self.last_data_time = time.time()
 
@@ -306,8 +323,11 @@ class picADSB_multiplexer:
                             try:
                                 self.message_queue.put_nowait(full_msg)
                                 self.stats['messages_processed'] += 1
+                                self.logger.debug(f"Processed message: {full_msg!r}")
                             except queue.Full:
                                 self.logger.warning("Message queue full, dropping message")
+                        else:
+                            self.logger.debug(f"Skipped non-ADSB message: {msg!r}")
         except Exception as e:
             self.logger.error(f"Error processing serial data: {e}")
             self.stats['errors'] += 1
@@ -397,7 +417,7 @@ def main():
     Entry point with command line argument parsing.
 
     Usage:
-        picadsb-multiplexer.py [--port PORT] [--device DEVICE]
+        picadsb-multiplexer.py [--port PORT] [--device DEVICE] [--log LEVEL]
     """
     import argparse
 
@@ -406,11 +426,18 @@ def main():
                       help='TCP port number (default: 30002)')
     parser.add_argument('--device', type=str, default='/dev/ttyACM0',
                       help='Serial device (default: /dev/ttyACM0)')
+    parser.add_argument('--log', type=str, default='INFO',
+                      choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
+                      help='Logging level (default: INFO)')
 
     args = parser.parse_args()
 
     try:
-        muxer = picADSB_multiplexer(tcp_port=args.port, serial_port=args.device)
+        muxer = picADSB_multiplexer(
+            tcp_port=args.port,
+            serial_port=args.device,
+            log_level=args.log
+        )
         muxer.run()
     except Exception as e:
         print(f"Error: {e}")

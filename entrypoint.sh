@@ -20,4 +20,5 @@ chmod 666 ${ADSB_DEVICE}
 # Start the multiplexer
 exec python3 -u picadsb-multiplexer.py \
     --port ${ADSB_TCP_PORT} \
-    --device ${ADSB_DEVICE}
+    --device ${ADSB_DEVICE} \
+    --log ${LOG_LEVEL:-INFO}  
