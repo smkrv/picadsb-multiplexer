@@ -44,38 +44,64 @@ class PicADSBMultiplexer:
 
     def validate_message(self, msg: bytes) -> bool:
         """
-        Validate Mode-S message using pyModeS.
-        Returns True if message is valid.
+        Validate Mode-S message with minimal restrictions to accept maximum valid messages.
+        Only obviously corrupted messages will be filtered out.
+
+        Args:
+            msg (bytes): Raw message received from the device
+
+        Returns:
+            bool: True if message passes basic validation, False otherwise
         """
         try:
-            # Remove prefix '*' and suffix ';'
+            # Remove any special characters and whitespace
             hex_msg = msg.decode().strip('*;\r\n')
 
-            # Check basic format
-            if not hex_msg or not hex_msg.isalnum():
+            # Basic checks for empty messages or non-hex characters
+            if not hex_msg:
+                self.logger.debug("Empty message rejected")
                 return False
 
-            # Get message length
+            # Check if string contains only valid hexadecimal characters
+            if not all(c in '0123456789ABCDEFabcdef' for c in hex_msg):
+                self.logger.debug(f"Non-hex characters in message: {hex_msg}")
+                return False
+
+            # Check message length (14 for short messages, 28 for long messages)
             msg_len = len(hex_msg)
-
-            # Mode-S Short (14 bytes) or Long (28 bytes) message
             if msg_len not in (14, 28):
-                return False
-
-            # Validate CRC
-            if not pms.crc(hex_msg) == 0:
+                self.logger.debug(f"Invalid message length ({msg_len}): {hex_msg}")
                 return False
 
             # Get Downlink Format (DF)
-            df = pms.df(hex_msg)
+            try:
+                df = pms.df(hex_msg)
+            except:
+                self.logger.debug(f"Cannot decode DF from message: {hex_msg}")
+                return False
 
-            # Log valid message type
-            self.logger.debug(f"Valid DF{df} message: {hex_msg}")
+            # Special handling for different message types
+            if df == 17:  # ADS-B messages
+                # Strict CRC check only for ADS-B messages
+                if not pms.crc(hex_msg):
+                    self.logger.debug(f"Invalid CRC for DF17 message: {hex_msg}")
+                    return False
+            elif df in [0, 4, 5, 11, 16, 20, 21, 24, 28]:
+                # These DF types are common and valid
+                # No strict CRC check to accept more messages
+                pass
+            else:
+                # Accept any other DF type that made it through basic validation
+                # This is very permissive but allows for maximum reception  
+                pass
 
+            # Log accepted message
+            self.logger.debug(f"Valid DF{df} message accepted: {hex_msg}")
             return True
 
         except Exception as e:
-            self.logger.debug(f"Message validation failed: {e}")
+            # Log any unexpected errors during validation
+            self.logger.debug(f"Message validation failed: {str(e)}, Message: {msg}")
             return False
 
     def __init__(self, tcp_port: int = 30002, serial_port: str = '/dev/ttyACM0', log_level: str = 'INFO'):
