@@ -37,13 +37,9 @@ import os
 import signal
 from datetime import datetime
 from typing import Optional, Dict, Any, List, Tuple
-import threading
 
 class PicADSBMultiplexer:
-    """
-    Main multiplexer class that handles device communication and client connections.
-    Implements specific protocol for MicroADSB / adsbPIC devices.
-    """
+    """Main multiplexer class that handles device communication and client connections."""
 
     # Known ADSB message prefixes
     ADSB_PREFIXES = [
@@ -61,14 +57,7 @@ class PicADSBMultiplexer:
     ]
 
     def __init__(self, tcp_port: int = 30002, serial_port: str = '/dev/ttyACM0', log_level: str = 'INFO'):
-        """
-        Initialize the multiplexer.
-
-        Args:
-            tcp_port: TCP port for client connections
-            serial_port: Serial port device path
-            log_level: Logging level (DEBUG, INFO, WARNING, ERROR)
-        """
+        """Initialize the multiplexer."""
         self.tcp_port = tcp_port
         self.serial_port = serial_port
         self._setup_logging(log_level)
@@ -99,7 +88,7 @@ class PicADSBMultiplexer:
         self.stats_interval = 60  # 1 minute
 
         # Message handling
-        self.message_queue = queue.Queue(maxsize=1000)  # Buffer for 1000 messages
+        self.message_queue = queue.Queue(maxsize=1000)
         self.clients: List[socket.socket] = []
 
         # Initialize interfaces
@@ -116,15 +105,15 @@ class PicADSBMultiplexer:
         if not isinstance(numeric_level, int):
             raise ValueError(f'Invalid log level: {log_level}')
 
-        self.logger = logging.getLogger('PicADSBMultiplexer')
+        self.logger = logging.getLogger('PicADSB')
         self.logger.setLevel(numeric_level)
 
         # Create logs directory
         os.makedirs('logs', exist_ok=True)
 
-        # File handler
+        # File handler for all messages
         fh = logging.FileHandler(
-            f'logs/PicADSBMultiplexer_{datetime.now():%Y%m%d_%H%M%S}.log'
+            f'logs/picadsb_{datetime.now():%Y%m%d_%H%M%S}.log'
         )
         fh.setLevel(logging.DEBUG)
         fh.setFormatter(logging.Formatter(
@@ -132,41 +121,24 @@ class PicADSBMultiplexer:
             '%Y-%m-%d %H:%M:%S'
         ))
 
-        # Console handler
-        ch = logging.StreamHandler()
-        ch.setLevel(numeric_level)
-        ch.setFormatter(logging.Formatter(
+        # Console handler for stderr (debug/info messages)
+        ch_err = logging.StreamHandler(sys.stderr)
+        ch_err.setLevel(numeric_level)
+        ch_err.setFormatter(logging.Formatter(
             '%(asctime)s.%(msecs)03d - %(levelname)s - %(message)s',
             '%Y-%m-%d %H:%M:%S'
         ))
 
         self.logger.addHandler(fh)
-        self.logger.addHandler(ch)
+        self.logger.addHandler(ch_err)
 
     def format_command(self, cmd_bytes: bytes) -> bytes:
-        """
-        Format command according to device protocol.
-
-        Args:
-            cmd_bytes: Raw command bytes
-
-        Returns:
-            Formatted command string with prefix and terminator
-        """
+        """Format command according to device protocol."""
         cmd_str = '-'.join([f"{b:02X}" for b in cmd_bytes])
         return f"#{cmd_str}\r".encode()
 
     def verify_response(self, cmd: bytes, response: bytes) -> bool:
-        """
-        Verify device response to command.
-
-        Args:
-            cmd: Original command bytes
-            response: Response received from device
-
-        Returns:
-            True if response is valid, False otherwise
-        """
+        """Verify device response to command."""
         if not response:
             return False
 
@@ -192,7 +164,7 @@ class PicADSBMultiplexer:
         return True
 
     def _init_socket(self):
-        """Initialize TCP server socket with error handling."""
+        """Initialize TCP server socket."""
         try:
             self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -239,10 +211,7 @@ class PicADSBMultiplexer:
             raise
 
     def _initialize_device(self) -> bool:
-        """
-        Initialize device with specific command sequence.
-        Returns True if initialization successful, False otherwise.
-        """
+        """Initialize device with specific command sequence."""
         commands = [
             (b'\x00', "Version request"),
             (b'\x43\x00', "Stop reception"),
@@ -275,10 +244,7 @@ class PicADSBMultiplexer:
         return True
 
     def _read_response(self) -> Optional[bytes]:
-        """
-        Read response from device with timeout.
-        Returns response bytes or None if timeout occurred.
-        """
+        """Read response from device with timeout."""
         buffer = b''
         timeout = time.time() + 1.0  # 1 second timeout
 
@@ -300,35 +266,47 @@ class PicADSBMultiplexer:
         return any(msg.startswith(prefix) for prefix in self.ADSB_PREFIXES)
 
     def _process_serial_data(self):
-        """Process incoming data from the ADSB device."""
+        """Process incoming data from the ADSB device byte by byte."""
         try:
             if self.ser.in_waiting:
-                data = self.ser.read(self.ser.in_waiting)
-                if data:
-                    self._buffer += data
+                byte = self.ser.read()
 
-                    while b';' in self._buffer:
-                        message, self._buffer = self._buffer.split(b';', 1)
-                        message += b';'
+                # Skip single \r and \n
+                if byte in [b'\r', b'\n']:
+                    return
 
-                        if len(message) <= 2:  # Skip empty messages
-                            continue
+                if byte in [b'#', b'*']:  # message start
+                    self._buffer = byte
+                elif byte == b';':  # message end
+                    self._buffer += byte
+                    if len(self._buffer) > 2:  # check minimum message length
+                        if self.is_adsb_message(self._buffer):
+                            try:
+                                # Send to clients
+                                self.message_queue.put_nowait(self._buffer + b'\n')
+                                self.stats['messages_processed'] += 1
 
-                        if message.startswith((b'*', b'#')):
-                            if self.is_adsb_message(message):
-                                try:
-                                    self.message_queue.put_nowait(message + b'\n')
-                                    self.stats['messages_processed'] += 1
-                                    self.logger.debug(f"ADSB message: {message.decode().strip()}")
-                                except queue.Full:
-                                    self.logger.warning("Message queue full, dropping message")
-                            else:
-                                self.logger.debug(f"Non-ADSB message: {message.decode().strip()}")
+                                # Print to stdout for compatibility
+                                print(self._buffer.decode().strip(), flush=True)
 
-                    # Limit buffer size
-                    if len(self._buffer) > 1024:
-                        self._buffer = b''
-                        self.logger.warning("Buffer overflow, cleared")
+                                # Log as debug
+                                self.logger.debug(f"ADSB message: {self._buffer[1:-1].decode()}")
+                            except queue.Full:
+                                self.logger.warning("Message queue full, dropping message")
+                        else:
+                            # Non-ADSB messages to debug log only
+                            self.logger.debug(f"Non-ADSB message: {self._buffer[1:-1].decode()}")
+                    self._buffer = b''
+                else:
+                    self._buffer += byte
+
+                # Limit buffer size
+                if len(self._buffer) > 100:
+                    self._buffer = b''
+
+            else:
+                # If no data, small delay
+                time.sleep(0.01)
 
         except Exception as e:
             self.logger.error(f"Error processing serial data: {e}")
@@ -374,8 +352,10 @@ class PicADSBMultiplexer:
 
                 for client in self.clients:
                     try:
-                        client.send(message)
-                    except:
+                        sent = client.send(message)
+                        if sent == 0:
+                            raise BrokenPipeError("Connection lost")
+                    except Exception as e:
                         disconnected_clients.append(client)
 
                 for client in disconnected_clients:
@@ -406,11 +386,26 @@ class PicADSBMultiplexer:
 
             self.last_version_check = current_time
 
+    def _update_stats(self):
+        """Update and log statistics."""
+        current_time = time.time()
+        if current_time - self.last_stats_update >= self.stats_interval:
+            messages_per_minute = (self.stats['messages_processed'] -
+                                 self.stats['last_minute_count'])
+
+            self.logger.info(
+                f"Statistics: Messages/min: {messages_per_minute}, "
+                f"Total: {self.stats['messages_processed']}, "
+                f"Clients: {self.stats['clients_current']}, "
+                f"Errors: {self.stats['errors']}"
+            )
+
+            self.stats['messages_per_minute'] = messages_per_minute
+            self.stats['last_minute_count'] = self.stats['messages_processed']
+            self.last_stats_update = current_time
+
     def _reconnect(self) -> bool:
-        """
-        Attempt to reconnect to the device.
-        Returns True if successful, False otherwise.
-        """
+        """Attempt to reconnect to the device."""
         self.logger.info("Attempting to reconnect...")
         retry_count = 3
 
@@ -442,6 +437,7 @@ class PicADSBMultiplexer:
                 self._handle_client_connections()
                 self._process_serial_data()
                 self._broadcast_messages()
+                self._update_stats()
                 time.sleep(0.001)  # Prevent CPU overload
 
         except KeyboardInterrupt:
@@ -467,7 +463,10 @@ class PicADSBMultiplexer:
             pass
 
         try:
-            self.ser.close()
+            if self.ser and self.ser.is_open:
+                self.ser.write(self.format_command(b'\x43\x00'))  # Stop reception
+                time.sleep(0.1)
+                self.ser.close()
         except:
             pass
 
