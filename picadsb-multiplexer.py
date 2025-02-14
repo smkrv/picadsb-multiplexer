@@ -116,7 +116,7 @@ class PicADSBMultiplexer:
         if not isinstance(numeric_level, int):
             raise ValueError(f'Invalid log level: {log_level}')
 
-        self.logger = logging.getLogger('PicADSB')
+        self.logger = logging.getLogger('PicADSBMultiplexer')
         self.logger.setLevel(numeric_level)
 
         # Create logs directory
@@ -124,7 +124,7 @@ class PicADSBMultiplexer:
 
         # File handler
         fh = logging.FileHandler(
-            f'logs/picadsb_{datetime.now():%Y%m%d_%H%M%S}.log'
+            f'logs/PicADSBMultiplexer_{datetime.now():%Y%m%d_%H%M%S}.log'
         )
         fh.setLevel(logging.DEBUG)
         fh.setFormatter(logging.Formatter(
