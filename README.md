@@ -22,7 +22,7 @@ The device works perfectly on Raspberry Pi and other Unix-based systems, making 
 
 ## Device Specifications
 - Original adsbPIC creator: [Sprut](https://sprut.de/electronic/pic/projekte/adsb/adsb_en.html)
-- Device: MicroADSB USB receiver (≈2010-2014)
+- Device: MicroADSB USB receiver (≈2010-20??)
 - Manufacturer: Miroslav Ionov
   - MicroADSB.com (website no longer available)
   - Anteni.net (active as of Feb 2025)
