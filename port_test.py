@@ -64,7 +64,7 @@ class ADSBMonitor:
         """Print the table header with column names"""
         print("\nADS-B Message Monitor")
         print(f"Connected to {self.host}:{self.port}")
-        print("\n{:^23} | {:^8} | {:^45} | {:^20}".format(
+        print("\n{:<23} | {:<8} | {:<45} | {:<20}".format(
             "Timestamp", "Type", "Message", "Description"))
         print("-" * 100)
 
@@ -164,7 +164,6 @@ class ADSBMonitor:
             self.print_header()
 
             while self.running:
-                # Use select for non-blocking read with timeout
                 ready = select.select([self.socket], [], [], 1.0)
 
                 if ready[0]:
@@ -174,15 +173,14 @@ class ADSBMonitor:
                             print("Connection closed by server")
                             break
 
-                        # Process multiple messages if present
                         messages = data.split(b';')
                         for msg in messages:
                             if msg.startswith(b'*'):
                                 formatted_msg = self.format_message(msg + b';')
                                 if formatted_msg:  # Only print if not a keep-alive message
                                     timestamp, msg_type, message, description = formatted_msg
-                                    print("{:^23} | {:^8} | {:^45} | {:^20}".format(
-                                        timestamp, msg_type, message, description[:20]))
+                                    print("{:<23} | {:<8} | {:<45} | {:<20}".format(
+                                        timestamp, msg_type, message, description))
 
                     except socket.error as e:
                         if e.errno != socket.EAGAIN and e.errno != socket.EWOULDBLOCK:
