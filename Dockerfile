@@ -7,14 +7,18 @@ RUN apt-get update && apt-get install -y \
     python3-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Create app directory
 WORKDIR /app
 
 # Copy requirements
-COPY requirements.txt .
+COPY requirements.txt ./
 
-# Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+# Install Python dependencies with platform-specific handling
+RUN if [ "$TARGETPLATFORM" = "linux/arm/v7" ]; then \
+    pip install --no-cache-dir numpy==1.26.4 --only-binary=:all: && \
+    pip install --no-cache-dir -r requirements.txt; \
+    else \
+    pip install --no-cache-dir -r requirements.txt; \
+    fi
 
 # Copy application
 COPY picadsb-multiplexer.py .
