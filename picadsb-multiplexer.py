@@ -18,6 +18,39 @@ class PicADSBMultiplexer:
     SERIAL_BUFFER_SIZE = 131072
     MAX_MESSAGE_LENGTH = 50
 
+    def _setup_logging(self, log_level: str):
+        """Configure logging with both file and console output."""
+        numeric_level = getattr(logging, log_level.upper(), None)
+        if not isinstance(numeric_level, int):
+            raise ValueError(f'Invalid log level: {log_level}')
+
+        self.logger = logging.getLogger('PicADSB')
+        self.logger.setLevel(numeric_level)
+
+        # Create logs directory
+        os.makedirs('logs', exist_ok=True)
+
+        # File handler for all messages
+        fh = logging.FileHandler(
+            f'logs/picadsb_{datetime.now():%Y%m%d_%H%M%S}.log'
+        )
+        fh.setLevel(logging.DEBUG)
+        fh.setFormatter(logging.Formatter(
+            '%(asctime)s.%(msecs)03d - %(name)s - %(levelname)s - %(message)s',
+            '%Y-%m-%d %H:%M:%S'
+        ))
+
+        # Console handler for stderr
+        ch_err = logging.StreamHandler(sys.stderr)
+        ch_err.setLevel(numeric_level)
+        ch_err.setFormatter(logging.Formatter(
+            '%(asctime)s.%(msecs)03d - %(levelname)s - %(message)s',
+            '%Y-%m-%d %H:%M:%S'
+        ))
+
+        self.logger.addHandler(fh)
+        self.logger.addHandler(ch_err)
+
     def __init__(self, tcp_port: int = 30002, serial_port: str = '/dev/ttyACM0',
                  log_level: str = 'INFO', skip_init: bool = False):
         self.tcp_port = tcp_port
