@@ -42,9 +42,10 @@ ENV ADSB_TCP_PORT=30002
 ENV ADSB_DEVICE=/dev/ttyACM0
 ENV ADSB_LOG_LEVEL=INFO
 ENV ADSB_NO_INIT=false
-# Log management settings
-ENV MAX_LOG_SIZE=100M        # Maximum size of logs directory before cleanup
-ENV LOG_RETENTION_DAYS=7     # Number of days to keep logs  
+
+# Log management settings (Maximum size of logs directory before cleanup and number of days to keep logs)
+ENV MAX_LOG_SIZE=100M
+ENV LOG_RETENTION_DAYS=7
 
 # Expose the default port
 EXPOSE ${ADSB_TCP_PORT}
