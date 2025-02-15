@@ -10,7 +10,8 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 # Configure logrotate
-RUN echo '/app/logs/*.log {
+RUN echo "\
+/app/logs/*.log {
     daily
     rotate 7
     compress
@@ -19,7 +20,7 @@ RUN echo '/app/logs/*.log {
     notifempty
     create 644 root root
     size 10M
-}' > /etc/logrotate.d/application
+}" > /etc/logrotate.d/application
 
 # Copy requirements
 COPY requirements.txt .
@@ -43,7 +44,7 @@ ENV ADSB_DEVICE=/dev/ttyACM0
 ENV ADSB_LOG_LEVEL=INFO
 ENV ADSB_NO_INIT=false
 
-# Log management settings (Maximum size of logs directory before cleanup and number of days to keep logs)
+# Log management settings
 ENV MAX_LOG_SIZE=100M
 ENV LOG_RETENTION_DAYS=7
 
