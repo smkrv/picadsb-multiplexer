@@ -35,78 +35,41 @@ import sys
 import time
 import os
 import signal
-import pyModeS as pms
 from datetime import datetime
 from typing import Optional, Dict, Any, List, Tuple
 
 class PicADSBMultiplexer:
     """Main multiplexer class that handles device communication and client connections."""
 
-    def validate_message(self, msg: bytes) -> bool:
+    def validate_message(self, msg: bytes) -> bool:  
         """
-        Validate Mode-S and Mode-A/C messages on 1090 MHz frequency.
-        Optimized for aviation-specific messages with minimal filtering.
+        Simplified message validation for 1090 MHz signals.
+        Only checks for valid hex characters and message length.
 
         Args:
-            msg (bytes): Raw message from 1090 MHz receiver
+            msg (bytes): Raw message from receiver
 
         Returns:
-            bool: True if message appears to be valid aviation data
+            bool: True if message has valid format
         """
         try:
             # Clean up received message
             hex_msg = msg.decode().strip('*;\r\n')
 
-            # Basic format check
+            # Skip empty messages
             if not hex_msg:
-                self.logger.debug("Empty message rejected")
                 return False
 
-            # Verify hexadecimal format
+            # Check for valid hex characters only
             if not all(c in '0123456789ABCDEFabcdef' for c in hex_msg):
-                self.logger.debug(f"Non-hex characters in message: {hex_msg}")
                 return False
 
-            # Check aviation message length
-            msg_len = len(hex_msg)
-            if msg_len not in (14, 28):  # Short (56 bits) or Long (112 bits) Mode-S
-                self.logger.debug(f"Non-standard message length ({msg_len}): {hex_msg}")
+            # Verify standard message length (56 or 112 bits)
+            if len(hex_msg) not in (14, 28):
                 return False
 
-            # Decode Downlink Format
-            try:
-                df = pms.df(hex_msg)
-            except:
-                self.logger.debug(f"Unable to decode DF from message: {hex_msg}")
-                return False
-
-            # Aviation message type validation
-            if df == 17:  # ADS-B
-                # Full validation for ADS-B
-                if not pms.crc(hex_msg):
-                    self.logger.debug(f"Invalid ADS-B message CRC: {hex_msg}")
-                    return False
-
-            elif df in [0]:  # Short ACAS
-                pass  # Accept all ACAS
-
-            elif df in [4, 5]:  # Altitude and Identity replies
-                pass  # Accept all altitude/identity data
-
-            elif df in [11]:  # All-call replies
-                pass  # Accept all all-call replies
-
-            elif df in [16]:  # Long ACAS
-                pass  # Accept all TCAS
-
-            elif df in [20, 21]:  # Comm-B altitude/identity
-                pass  # Accept all Mode-S communications
-
-            elif df in [24, 28]:  # Comm-D ELM
-                pass  # Accept Extended Length Messages
-
-            # Log accepted aviation message
-            self.logger.debug(f"Valid aviation message DF{df}: {hex_msg}")
+            # Log accepted message
+            self.logger.debug(f"Valid message: {hex_msg}")
             return True
 
         except Exception as e:
@@ -323,7 +286,7 @@ class PicADSBMultiplexer:
         """Check if message is valid ADSB format."""
         return any(msg.startswith(prefix) for prefix in self.ADSB_PREFIXES)
 
-    def _process_serial_data(self):  
+    def _process_serial_data(self):
         """
         Process incoming data from the ADSB device and format it for dump1090.
         dump1090 expects messages in specific formats:
