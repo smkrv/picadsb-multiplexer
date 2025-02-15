@@ -228,9 +228,6 @@ class PicADSBMultiplexer:
                 dsrdtr=False       # disable hardware (DSR/DTR) flow control
             )
 
-            # Set buffer sizes
-            self.ser.set_buffer_size(rx_size=4096, tx_size=4096)
-
             # Clear buffers
             self.ser.reset_input_buffer()
             self.ser.reset_output_buffer()
