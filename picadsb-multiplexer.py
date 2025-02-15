@@ -427,13 +427,20 @@ class PicADSBMultiplexer:
     def _handle_client_data(self, client: socket.socket, data: bytes):
         """Handle regular data from client."""
         try:
-            client.getpeername()
+            peer = client.getpeername()
 
             # Update last active time
             self.client_last_active[client] = time.time()
 
-            # Process client data if needed
-            self.logger.debug(f"Received data from {client.getpeername()}: {data!r}")
+            # Форматируем данные для более читаемого вывода
+            hex_str = ' '.join([f'{b:02X}' for b in data])
+            ascii_str = ''.join([chr(b) if 32 <= b <= 126 else '.' for b in data])
+
+            self.logger.debug(
+                f"Client data from {peer}:\n"
+                f"  HEX: {hex_str}\n"
+                f"ASCII: {ascii_str}"
+            )
 
         except OSError:
             self._remove_client(client)
