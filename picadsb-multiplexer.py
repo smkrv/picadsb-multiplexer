@@ -41,7 +41,7 @@ from typing import Optional, Dict, Any, List, Tuple
 class PicADSBMultiplexer:
     """Main multiplexer class that handles device communication and client connections."""
 
-    # Константы для keep-alive
+    # Constants for keepalive
     KEEPALIVE_MARKER = b'\x00'
     KEEPALIVE_INTERVAL = 30  # seconds
 
@@ -60,29 +60,34 @@ class PicADSBMultiplexer:
             # Clean up received message
             hex_msg = msg.decode().strip('*;\r\n')
 
+            # Log incoming message for debugging
+            self.logger.debug(f"Validating message: {msg!r}, cleaned: {hex_msg!r}")
+
             # Skip empty messages
             if not hex_msg:
+                self.logger.debug("Empty message rejected")
                 return False
 
             # Check for valid hex characters only
             if not all(c in '0123456789ABCDEFabcdef' for c in hex_msg):
+                self.logger.debug(f"Invalid hex characters in message: {hex_msg}")
                 return False
 
             # Verify standard message length (56 or 112 bits)
             if len(hex_msg) not in (14, 28):
+                self.logger.debug(f"Invalid length {len(hex_msg)}: {hex_msg}")
                 return False
 
-            # Log accepted message
-            self.logger.debug(f"Valid message: {hex_msg}")
+            self.logger.debug(f"Message validated successfully: {hex_msg}")
             return True
 
         except Exception as e:
-            self.logger.debug(f"Validation error: {str(e)}, Message: {msg}")
+            self.logger.debug(f"Validation error: {str(e)}, Message: {msg!r}")
             return False
 
     def __init__(self, tcp_port: int = 30002, serial_port: str = '/dev/ttyACM0',
                  log_level: str = 'INFO', skip_init: bool = False):
-        """Initialize the multiplexer."""
+        """Initialize the multiplexer with given parameters."""
         self.tcp_port = tcp_port
         self.serial_port = serial_port
         self.skip_init = skip_init
@@ -93,6 +98,8 @@ class PicADSBMultiplexer:
         self.firmware_version = None
         self.device_id = None
         self._buffer = b''
+        self._last_data_time = time.time()
+        self._no_data_logged = False
 
         # Statistics
         self.stats = {
@@ -151,7 +158,7 @@ class PicADSBMultiplexer:
             '%Y-%m-%d %H:%M:%S'
         ))
 
-        # Console handler for stderr (debug/info messages)
+        # Console handler for stderr
         ch_err = logging.StreamHandler(sys.stderr)
         ch_err.setLevel(numeric_level)
         ch_err.setFormatter(logging.Formatter(
@@ -207,7 +214,7 @@ class PicADSBMultiplexer:
             raise
 
     def _init_serial(self):
-        """Initialize serial port with optional device initialization."""
+        """Initialize serial port with device configuration."""
         try:
             self.ser = serial.Serial(
                 port=self.serial_port,
@@ -215,8 +222,14 @@ class PicADSBMultiplexer:
                 bytesize=serial.EIGHTBITS,
                 parity=serial.PARITY_NONE,
                 stopbits=serial.STOPBITS_ONE,
-                timeout=1
+                timeout=1,
+                xonxoff=False,     # disable software flow control
+                rtscts=False,      # disable hardware (RTS/CTS) flow control
+                dsrdtr=False       # disable hardware (DSR/DTR) flow control
             )
+
+            # Set buffer sizes
+            self.ser.set_buffer_size(rx_size=4096, tx_size=4096)
 
             # Clear buffers
             self.ser.reset_input_buffer()
@@ -225,18 +238,16 @@ class PicADSBMultiplexer:
             # Initialize CDC
             self.ser.setDTR(False)
             self.ser.setRTS(False)
-            time.sleep(0.1)
+            time.sleep(0.25)
             self.ser.setDTR(True)
             self.ser.setRTS(True)
-            time.sleep(0.1)
+            time.sleep(0.25)
 
             if not self.skip_init:
-                # Perform device initialization
                 if not self._initialize_device():
                     raise Exception("Device initialization failed")
             else:
                 self.logger.info("Skipping device initialization (--no-init mode)")
-                # Only check version in no-init mode
                 self.ser.write(self.format_command(b'\x00'))
                 response = self._read_response()
                 if not response or not self.verify_response(b'\x00', response):
@@ -284,19 +295,14 @@ class PicADSBMultiplexer:
     def _configure_client_socket(self, client_socket: socket.socket):
         """Configure new client socket with keepalive settings."""
         try:
-            # Enable TCP keepalive
             client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
 
-            # Configure TCP keepalive parameters on Linux
             if sys.platform.startswith('linux'):
                 client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 60)
                 client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 10)
                 client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 6)
 
-            # Set non-blocking mode
             client_socket.setblocking(False)
-
-            # Initialize last active time
             self.client_last_active[client_socket] = time.time()
 
         except Exception as e:
@@ -333,7 +339,7 @@ class PicADSBMultiplexer:
             self._remove_client(client)
 
     def _handle_client_connections(self):
-        """Handle new client connections and data with improved keepalive."""
+        """Handle new client connections and data with keepalive."""
         try:
             current_time = time.time()
 
@@ -345,7 +351,6 @@ class PicADSBMultiplexer:
 
             for sock in readable:
                 if sock is self.server_socket:
-                    # New connection
                     client_socket, address = self.server_socket.accept()
                     self._configure_client_socket(client_socket)
                     self.clients.append(client_socket)
@@ -353,7 +358,6 @@ class PicADSBMultiplexer:
                     self.stats['clients_current'] = len(self.clients)
                     self.logger.info(f"New client connected from {address}")
                 else:
-                    # Existing client data
                     try:
                         data = sock.recv(1024)
                         if not data:
@@ -361,18 +365,15 @@ class PicADSBMultiplexer:
                             continue
 
                         if data == self.KEEPALIVE_MARKER:
-                            # Update last active time on keepalive
                             self.client_last_active[sock] = current_time
                             self.logger.debug(f"Received keepalive from {sock.getpeername()}")
                         else:
-                            # Handle regular data
                             self._handle_client_data(sock, data)
 
                     except (ConnectionError, OSError) as e:
                         self.logger.debug(f"Connection error: {e}")
                         self._remove_client(sock)
 
-            # Send keepalive to idle clients
             self._check_client_keepalive(current_time)
 
         except Exception as e:
@@ -386,7 +387,6 @@ class PicADSBMultiplexer:
             try:
                 last_active = self.client_last_active.get(client, 0)
                 if current_time - last_active > self.KEEPALIVE_INTERVAL:
-                    # Send keepalive
                     try:
                         sent = client.send(self.KEEPALIVE_MARKER)
                         if sent == 0:
@@ -401,7 +401,6 @@ class PicADSBMultiplexer:
                 self.logger.debug(f"Error checking client keepalive: {e}")
                 disconnected_clients.append(client)
 
-        # Remove disconnected clients
         for client in disconnected_clients:
             self._remove_client(client)
 
@@ -425,14 +424,11 @@ class PicADSBMultiplexer:
             self.logger.debug(f"Error removing client: {e}")
 
     def _handle_client_data(self, client: socket.socket, data: bytes):
-        """Handle regular data from client."""
+        """Handle and log client data for debugging."""
         try:
             peer = client.getpeername()
-
-            # Update last active time
             self.client_last_active[client] = time.time()
 
-            # Форматируем данные для более читаемого вывода
             hex_str = ' '.join([f'{b:02X}' for b in data])
             ascii_str = ''.join([chr(b) if 32 <= b <= 126 else '.' for b in data])
 
@@ -451,31 +447,35 @@ class PicADSBMultiplexer:
         """Process incoming data from the ADSB device."""
         try:
             if self.ser.in_waiting:
-                byte = self.ser.read()
+                self._last_data_time = time.time()
+                self._no_data_logged = False
 
-                # Skip standalone line endings
+                self.logger.debug(f"Available bytes: {self.ser.in_waiting}")
+                byte = self.ser.read()
+                self.logger.debug(f"Read byte: {byte!r}")
+
                 if byte in [b'\r', b'\n']:
                     return
 
-                if byte in [b'#', b'*']:  # Message start markers
+                if byte in [b'#', b'*']:
+                    if self._buffer:
+                        self.logger.debug(f"Discarding incomplete buffer: {self._buffer!r}")
                     self._buffer = byte
-                elif byte == b';':  # Message end marker
+                elif byte == b';':
                     self._buffer += byte
 
-                    if len(self._buffer) > 2:  # Minimum valid message length
+                    if len(self._buffer) > 2:
                         if self.validate_message(self._buffer):
                             try:
-                                # Format message for dump1090
                                 clean_msg = self._buffer.rstrip(b'\r\n;')
                                 if clean_msg.startswith(b'#'):
                                     clean_msg = b'*' + clean_msg[1:]
                                 formatted_msg = clean_msg + b';\n'
 
-                                # Send to connected clients
+                                self.logger.debug(f"Putting message in queue: {formatted_msg!r}")
                                 self.message_queue.put_nowait(formatted_msg)
                                 self.stats['messages_processed'] += 1
 
-                                # Output for piping to dump1090
                                 print(formatted_msg.decode().rstrip(), flush=True)
 
                             except queue.Full:
@@ -487,13 +487,12 @@ class PicADSBMultiplexer:
                 else:
                     self._buffer += byte
 
-                # Safety limit for buffer size
                 if len(self._buffer) > 100:
-                    self.logger.debug(f"Buffer overflow, clearing: {self._buffer}")
+                    self.logger.debug(f"Buffer overflow, clearing: {self._buffer!r}")
                     self._buffer = b''
 
             else:
-                time.sleep(0.001)  # Prevent CPU overload
+                time.sleep(0.001)
 
         except Exception as e:
             self.logger.error(f"Error processing serial data: {e}")
@@ -504,26 +503,53 @@ class PicADSBMultiplexer:
         try:
             while not self.message_queue.empty():
                 message = self.message_queue.get_nowait()
+                self.logger.debug(f"Broadcasting message from queue: {message!r}")
+
                 disconnected_clients = []
 
                 for client in self.clients:
                     try:
-                        # Update last active time when sending data
                         self.client_last_active[client] = time.time()
-
                         sent = client.send(message)
+
                         if sent == 0:
                             raise BrokenPipeError("Connection lost")
+                        elif sent != len(message):
+                            self.logger.warning(
+                                f"Incomplete send to client {client.getpeername()}: "
+                                f"sent {sent} of {len(message)} bytes"
+                            )
+                        else:
+                            self.logger.debug(f"Successfully sent message to {client.getpeername()}")
+
                     except Exception as e:
                         self.logger.debug(f"Error sending to client: {e}")
                         disconnected_clients.append(client)
 
-                # Remove disconnected clients
                 for client in disconnected_clients:
                     self._remove_client(client)
 
         except Exception as e:
             self.logger.error(f"Error broadcasting messages: {e}")
+
+    def _check_device_status(self):
+        """Check device status if no data received for a while."""
+        current_time = time.time()
+
+        if current_time - self._last_data_time > 30 and not self._no_data_logged:
+            self.logger.warning("No data received for 30 seconds, checking device...")
+
+            self.ser.write(self.format_command(b'\x00'))
+            response = self._read_response()
+
+            if not response or not self.verify_response(b'\x00', response):
+                self.logger.error("Device not responding properly")
+                if not self._reconnect():
+                    self.running = False
+            else:
+                self.logger.info("Device responding normally despite no data")
+
+            self._no_data_logged = True
 
     def _check_device_version(self):
         """Periodic device version check."""
@@ -558,6 +584,9 @@ class PicADSBMultiplexer:
                 f"Queue: {self.message_queue.qsize()}/{self.message_queue.maxsize}"
             )
 
+            if self.message_queue.qsize() > self.message_queue.maxsize * 0.8:
+                self.logger.warning("Message queue is more than 80% full!")
+
             self.stats['messages_per_minute'] = messages_per_minute
             self.stats['last_minute_count'] = self.stats['messages_processed']
             self.last_stats_update = current_time
@@ -591,12 +620,26 @@ class PicADSBMultiplexer:
 
         try:
             while self.running:
+                cycle_start = time.time()
+                messages_at_start = self.stats['messages_processed']
+
                 self._check_device_version()
                 self._handle_client_connections()
                 self._process_serial_data()
                 self._broadcast_messages()
                 self._update_stats()
-                time.sleep(0.001)  # Prevent CPU overload
+                self._check_device_status()
+
+                cycle_end = time.time()
+                messages_processed = self.stats['messages_processed'] - messages_at_start
+
+                if messages_processed > 0:
+                    self.logger.debug(
+                        f"Cycle time: {(cycle_end - cycle_start)*1000:.2f}ms, "
+                        f"Messages processed: {messages_processed}"
+                    )
+
+                time.sleep(0.01)
 
         except KeyboardInterrupt:
             self.logger.info("Keyboard interrupt received")
@@ -609,20 +652,17 @@ class PicADSBMultiplexer:
         """Clean up resources on shutdown."""
         self.logger.info("Cleaning up...")
 
-        # Close all client connections
-        for client in self.clients[:]:  # Make a copy of the list
+        for client in self.clients[:]:
             self._remove_client(client)
 
-        # Close server socket
         try:
             self.server_socket.close()
         except:
             pass
 
-        # Close serial port
         try:
             if self.ser and self.ser.is_open:
-                self.ser.write(self.format_command(b'\x43\x00'))  # Stop reception
+                self.ser.write(self.format_command(b'\x43\x00'))
                 time.sleep(0.1)
                 self.ser.close()
         except:
