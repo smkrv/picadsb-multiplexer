@@ -86,7 +86,7 @@ docker-compose up -d
 ```bash
 docker run -d \
     --name picadsb-multiplexer \
-    --device=/dev/ttyACM0:/dev/ttyACM0 \
+    --serial=/dev/ttyACM0:/dev/ttyACM0 \
     -p 30002:30002 \
     -e ADSB_TCP_PORT=30002 \
     -e ADSB_DEVICE=/dev/ttyACM0 \
@@ -191,7 +191,7 @@ docker build -t picadsb-multiplexer .
 ```bash
 # Run the multiplexer in debug mode
 docker run -it --rm \
-    --device=/dev/ttyACM0:/dev/ttyACM0 \
+    --serial=/dev/ttyACM0:/dev/ttyACM0 \
     -e ADSB_LOG_LEVEL=DEBUG \
     picadsb-multiplexer
 ```
@@ -316,7 +316,7 @@ sudo udevadm control --reload-rules
 
 Start the multiplexer:
 ```bash
-python3 picadsb-multiplexer.py --port 30002 --device /dev/ttyACM0
+python3 picadsb-multiplexer.py --port 30002 --serial /dev/ttyACM0
 ```
 
 #### Testing Reception
@@ -349,7 +349,7 @@ Description=picadsbmultiplexer TCP Bridge
 After=network.target
 
 [Service]
-ExecStart=/usr/bin/python3 /path/to/picadsb-multiplexer.py --port 30002 --device /dev/ttyACM0
+ExecStart=/usr/bin/python3 /path/to/picadsb-multiplexer.py --port 30002 --serial /dev/ttyACM0
 WorkingDirectory=/path/to/script/directory
 StandardOutput=append:/var/log/picadsbmultiplexer.log
 StandardError=append:/var/log/picadsbmultiplexer.error.log
