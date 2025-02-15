@@ -21,4 +21,5 @@ chmod 666 ${ADSB_DEVICE}
 exec python3 -u picadsb-multiplexer.py \
     --port ${ADSB_TCP_PORT} \
     --device ${ADSB_DEVICE} \
-    --log ${ADSB_LOG_LEVEL}
+    --log ${ADSB_LOG_LEVEL} \
+    $([ "$ADSB_NO_INIT" = "true" ] && echo "--no-init")
