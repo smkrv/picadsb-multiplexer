@@ -10,17 +10,7 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 # Configure logrotate
-RUN echo "\
-/app/logs/*.log {
-    daily
-    rotate 7
-    compress
-    delaycompress
-    missingok
-    notifempty
-    create 644 root root
-    size 10M
-}" > /etc/logrotate.d/application
+RUN echo '/app/logs/*.log { daily rotate 7 compress delaycompress missingok notifempty create 644 root root size 10M }' > /etc/logrotate.d/application
 
 # Copy requirements
 COPY requirements.txt .
