@@ -56,10 +56,8 @@ class PicADSBMultiplexer:
         self.logger = logging.getLogger('PicADSB')
         self.logger.setLevel(numeric_level)
 
-        # Create logs directory
         os.makedirs('logs', exist_ok=True)
 
-        # File handler for all messages
         fh = logging.FileHandler(
             f'logs/picadsb_{datetime.now():%Y%m%d_%H%M%S}.log'
         )
@@ -69,7 +67,6 @@ class PicADSBMultiplexer:
             '%Y-%m-%d %H:%M:%S'
         ))
 
-        # Console handler for stderr
         ch_err = logging.StreamHandler(sys.stderr)
         ch_err.setLevel(numeric_level)
         ch_err.setFormatter(logging.Formatter(
@@ -92,31 +89,6 @@ class PicADSBMultiplexer:
         except Exception as e:
             self.logger.error(f"Failed to initialize socket: {e}")
             raise
-
-    def _accept_new_client(self):
-        """Accept new client connection."""
-        try:
-            client_socket, address = self.server_socket.accept()
-            self._configure_client_socket(client_socket)
-            self.clients.append(client_socket)
-            self.stats['clients_total'] += 1
-            self.stats['clients_current'] = len(self.clients)
-            self.logger.info(f"New client connected from {address}")
-        except Exception as e:
-            self.logger.error(f"Error accepting client: {e}")
-
-    def _configure_client_socket(self, client_socket: socket.socket):
-        """Configure new client socket with keepalive settings."""
-        try:
-            client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
-            if sys.platform.startswith('linux'):
-                client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 60)
-                client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 10)
-                client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 6)
-            client_socket.setblocking(False)
-            self.client_last_active[client_socket] = time.time()
-        except Exception as e:
-            self.logger.warning(f"Failed to configure keepalive for client: {e}")
 
     def __init__(self, tcp_port: int = 30002, serial_port: str = '/dev/ttyACM0',
                  log_level: str = 'INFO', skip_init: bool = False):
@@ -230,7 +202,6 @@ class PicADSBMultiplexer:
                 else:
                     buffer += byte
 
-                # Prevent buffer overflow during response reading
                 if len(buffer) > self.MAX_MESSAGE_LENGTH:
                     self.logger.warning(f"Response buffer overflow: {buffer!r}")
                     return None
@@ -304,6 +275,14 @@ class PicADSBMultiplexer:
             self.logger.error(f"Error verifying response: {e}")
             return False
 
+    def _check_device_version(self):
+        """Check device version."""
+        self.ser.write(self.format_command(b'\x00'))
+        response = self._read_response()
+        if not response or not self.verify_response(b'\x00', response):
+            raise Exception("Device version check failed")
+        return True
+
     def _process_serial_data(self):
         """Process incoming data from the ADSB device."""
         try:
@@ -372,6 +351,79 @@ class PicADSBMultiplexer:
             self.logger.error(f"Error in serial processing: {e}")
             self.stats['errors'] += 1
 
+    def _update_stats(self):
+        """Update and log periodic statistics."""
+        current_time = time.time()
+        if current_time - self.last_stats_update >= self.stats_interval:
+            messages_per_minute = (self.stats['messages_processed'] -
+                                 self.stats['last_minute_count'])
+
+            bytes_per_minute = self.stats['bytes_processed'] - \
+                              getattr(self, '_last_bytes_processed', 0)
+
+            self.logger.info(
+                f"Statistics:\n"
+                f"  Messages/min: {messages_per_minute}\n"
+                f"  Bytes/min: {bytes_per_minute}\n"
+                f"  Total messages: {self.stats['messages_processed']}\n"
+                f"  Total bytes: {self.stats['bytes_processed']}\n"
+                f"  Dropped messages: {self.stats['messages_dropped']}\n"
+                f"  Invalid messages: {self.stats['invalid_messages']}\n"
+                f"  Buffer overflows: {self.stats['buffer_overflows']}\n"
+                f"  Sync losses: {self.stats['sync_losses']}\n"
+                f"  Errors: {self.stats['errors']}\n"
+                f"  Connected clients: {self.stats['clients_current']}\n"
+                f"  Queue: {self.message_queue.qsize()}/{self.message_queue.maxsize}"
+            )
+
+            self.stats['messages_per_minute'] = messages_per_minute
+            self.stats['last_minute_count'] = self.stats['messages_processed']
+            self._last_bytes_processed = self.stats['bytes_processed']
+            self.last_stats_update = current_time
+
+    def _accept_new_client(self):
+        """Accept new client connection."""
+        try:
+            client_socket, address = self.server_socket.accept()
+            self._configure_client_socket(client_socket)
+            self.clients.append(client_socket)
+            self.stats['clients_total'] += 1
+            self.stats['clients_current'] = len(self.clients)
+            self.logger.info(f"New client connected from {address}")
+        except Exception as e:
+            self.logger.error(f"Error accepting client: {e}")
+
+    def _configure_client_socket(self, client_socket: socket.socket):
+        """Configure new client socket with keepalive settings."""
+        try:
+            client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+            if sys.platform.startswith('linux'):
+                client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 60)
+                client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 10)
+                client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 6)
+            client_socket.setblocking(False)
+            self.client_last_active[client_socket] = time.time()
+        except Exception as e:
+            self.logger.warning(f"Failed to configure keepalive for client: {e}")
+
+    def _handle_client_data(self, client: socket.socket):
+        """Handle data received from client."""
+        try:
+            data = client.recv(1024)
+            if not data:
+                self._remove_client(client)
+                return
+
+            if data == self.KEEPALIVE_MARKER:
+                self.client_last_active[client] = time.time()
+                self.logger.debug(f"Received keepalive from {client.getpeername()}")
+            else:
+                self.logger.debug(f"Received data from client: {data!r}")
+
+        except Exception as e:
+            self.logger.debug(f"Error handling client data: {e}")
+            self._remove_client(client)
+
     def _broadcast_message(self, message: bytes):
         """Broadcast message to all connected clients."""
         disconnected_clients = []
@@ -404,6 +456,41 @@ class PicADSBMultiplexer:
         except Exception as e:
             self.logger.error(f"Error removing client: {e}")
 
+    def _check_timeouts(self):
+        """Check for timeouts and inactive clients."""
+        current_time = time.time()
+
+        if current_time - self._last_data_time > 30 and not self._no_data_logged:
+            self.logger.warning("No data received for 30 seconds")
+            self._no_data_logged = True
+
+        for client in list(self.clients):
+            if current_time - self.client_last_active.get(client, 0) > 60:
+                self.logger.info(f"Closing inactive client {client.getpeername()}")
+                self._remove_client(client)
+
+    def validate_message(self, message: bytes) -> bool:
+        """Validate message format."""
+        try:
+            if len(message) < 3:
+                return False
+
+            if not message.startswith((b'*', b'#')):
+                return False
+
+            if not message.endswith(b';'):
+                return False
+
+            valid_chars = set(b'0123456789ABCDEF*#;')
+            if not all(b in valid_chars for b in message[1:-1]):
+                return False
+
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Message validation error: {e}")
+            return False
+
     def _signal_handler(self, signum, frame):
         """Handle shutdown signals."""
         self.logger.info(f"Received signal {signum}, shutting down...")
@@ -417,7 +504,8 @@ class PicADSBMultiplexer:
                 self._process_serial_data()
 
                 try:
-                    readable, _, _ = select.select([self.server_socket] + self.clients, [], [], 0.1)
+                    readable, _, _ = select.select(
+                        [self.server_socket] + self.clients, [], [], 0.1)
                     for sock in readable:
                         if sock is self.server_socket:
                             self._accept_new_client()
@@ -452,7 +540,7 @@ class PicADSBMultiplexer:
             pass
 
         try:
-            if self.ser and self.ser.is_open:
+            if hasattr(self, 'ser') and self.ser.is_open:
                 self.ser.close()
         except:
             pass
