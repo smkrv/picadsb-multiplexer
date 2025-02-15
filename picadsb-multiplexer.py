@@ -47,42 +47,46 @@ class PicADSBMultiplexer:
 
     def validate_message(self, msg: bytes) -> bool:
         """
-        Simplified message validation for 1090 MHz signals.
-        Only checks for valid hex characters and message length.
+        Validates 1090 MHz signals including ADS-B, Mode-S, TCAS, etc.
+        Checks hex format and extended length requirements.
 
         Args:
             msg (bytes): Raw message from receiver
 
         Returns:
-            bool: True if message has valid format
+            bool: True if message has valid structure
         """
         try:
-            # Clean up received message
-            hex_msg = msg.decode().strip('*;\r\n')
+            # Normalize message to uppercase hex
+            hex_msg = msg.decode(errors='ignore').strip('*;\r\n \t').upper()
+            self.logger.debug(f"Validating: {msg!r} -> Cleaned: {hex_msg!r}")
 
-            # Log incoming message for debugging
-            self.logger.debug(f"Validating message: {msg!r}, cleaned: {hex_msg!r}")
-
-            # Skip empty messages
+            # Reject empty or non-hex messages
             if not hex_msg:
                 self.logger.debug("Empty message rejected")
                 return False
 
-            # Check for valid hex characters only
-            if not all(c in '0123456789ABCDEFabcdef' for c in hex_msg):
-                self.logger.debug(f"Invalid hex characters in message: {hex_msg}")
+            if not all(c in '0123456789ABCDEF' for c in hex_msg):
+                self.logger.debug(f"Invalid hex chars: {hex_msg}")
                 return False
 
-            # Verify standard message length (56 or 112 bits)
-            if len(hex_msg) not in (14, 28):
-                self.logger.debug(f"Invalid length {len(hex_msg)}: {hex_msg}")
+            valid_lengths = (14, 18, 28)
+            if len(hex_msg) not in valid_lengths:
+                self.logger.warning(f"Unusual length {len(hex_msg)}: {hex_msg[:12]}...")
+                return True
+
+            if len(hex_msg) == 18 and not hex_msg.startswith(('A0', 'B0')):
+                self.logger.debug(f"Format violation: {hex_msg[:6]}...")
                 return False
 
-            self.logger.debug(f"Message validated successfully: {hex_msg}")
+            self.logger.debug(f"Validated: {hex_msg[:8]}... (len {len(hex_msg)})")
             return True
 
+        except UnicodeDecodeError as e:
+            self.logger.error(f"Decode error: {e} | Message: {msg!r}")
+            return False
         except Exception as e:
-            self.logger.debug(f"Validation error: {str(e)}, Message: {msg!r}")
+            self.logger.error(f"Validation crash: {type(e).__name__} - {str(e)}")
             return False
 
     def __init__(self, tcp_port: int = 30002, serial_port: str = '/dev/ttyACM0',
