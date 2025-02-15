@@ -44,6 +44,17 @@ The device works perfectly on Raspberry Pi and other Unix-based systems, making 
 
 ## Quick Start
 
+ⓘ Before starting, ensure all DIP switches are in the OFF position:
+
+```console
+ 1   2   3   4
+┌─┐ ┌─┐ ┌─┐ ┌─┐
+│ │ │ │ │ │ │ │
+│█│ │█│ │█│ │█│
+└─┘ └─┘ └─┘ └─┘
+OFF OFF OFF OFF
+```
+
 ### Using Docker Compose
 
 1. Create a `docker-compose.yml`:
