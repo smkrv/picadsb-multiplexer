@@ -173,36 +173,6 @@ class PicADSBMultiplexer:
         signal.signal(signal.SIGINT, self._signal_handler)
         signal.signal(signal.SIGTERM, self._signal_handler)
 
-    def _read_response(self) -> Optional[bytes]:
-        """Read response from device with timeout."""
-        buffer = b''
-        timeout = time.time() + 1.0  # 1 second timeout
-
-        while time.time() < timeout:
-            if self.ser.in_waiting:
-                byte = self.ser.read()
-                if byte == b'#' or byte == b'*':  # message start
-                    buffer = byte
-                elif byte in [b'\r', b'\n']:  # message end
-                    if buffer:
-                        return buffer
-                else:
-                    buffer += byte
-
-                # Prevent buffer overflow during response reading
-                if len(buffer) > self.MAX_MESSAGE_LENGTH:
-                    self.logger.warning(f"Response buffer overflow: {buffer!r}")
-                    return None
-
-            time.sleep(0.01)
-
-        if buffer:
-            self.logger.warning(f"Incomplete response (timeout): {buffer!r}")
-        else:
-            self.logger.warning("No response received (timeout)")
-
-        return None
-
     def _init_serial(self):
         """Initialize serial port with device configuration."""
         try:
@@ -243,6 +213,36 @@ class PicADSBMultiplexer:
         except Exception as e:
             self.logger.error(f"Failed to initialize serial port: {e}")
             raise
+
+    def _read_response(self) -> Optional[bytes]:
+        """Read response from device with timeout."""
+        buffer = b''
+        timeout = time.time() + 1.0  # 1 second timeout
+
+        while time.time() < timeout:
+            if self.ser.in_waiting:
+                byte = self.ser.read()
+                if byte == b'#' or byte == b'*':  # message start
+                    buffer = byte
+                elif byte in [b'\r', b'\n']:  # message end
+                    if buffer:
+                        return buffer
+                else:
+                    buffer += byte
+
+                # Prevent buffer overflow during response reading
+                if len(buffer) > self.MAX_MESSAGE_LENGTH:
+                    self.logger.warning(f"Response buffer overflow: {buffer!r}")
+                    return None
+
+            time.sleep(0.01)
+
+        if buffer:
+            self.logger.warning(f"Incomplete response (timeout): {buffer!r}")
+        else:
+            self.logger.warning("No response received (timeout)")
+
+        return None
 
     def _initialize_device(self) -> bool:
         """Initialize device with specific command sequence."""
