@@ -282,7 +282,6 @@ class PicADSBMultiplexer:
             return False
 
     def run(self):
-        """Основной цикл работы"""
         self.logger.info("Starting multiplexer...")
 
         while self.running:
@@ -325,7 +324,6 @@ class PicADSBMultiplexer:
                 self._remove_client(client)
 
     def cleanup(self):
-        """Корректное завершение работы"""
         self.logger.info("Shutting down...")
 
         for client in self.clients[:]:
@@ -339,32 +337,34 @@ class PicADSBMultiplexer:
 
         self.logger.info("Cleanup completed")
 
-if __name__ == '__main__':
+def main():
+    """Entry point with command line argument parsing."""
     import argparse
 
-    parser = argparse.ArgumentParser(description='PicADSB Multiplexer')
+    parser = argparse.ArgumentParser(description='ADS-B Multiplexer for MicroADSB/adsbPIC devices')
     parser.add_argument('--port', type=int, default=30002,
-                      help='TCP port (default: 30002)')
-    parser.add_argument('--serial', default='/dev/ttyACM0',
-                      help='Serial port (default: /dev/ttyACM0)')
-    parser.add_argument('--log-level', default='INFO',
+                      help='TCP port number (default: 30002)')
+    parser.add_argument('--device', type=str, default='/dev/ttyACM0',
+                      help='Serial device (default: /dev/ttyACM0)')
+    parser.add_argument('--log', type=str, default='INFO',
                       choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
-                      help='Log level (default: INFO)')
+                      help='Logging level (default: INFO)')
     parser.add_argument('--no-init', action='store_true',
-                      help='Skip device initialization')
+                      help='Skip device initialization (raw mode)')
 
     args = parser.parse_args()
 
-    multiplexer = PicADSBMultiplexer(
-        tcp_port=args.port,
-        serial_port=args.serial,
-        log_level=args.log_level,
-        skip_init=args.no_init
-    )
-
     try:
-        multiplexer.run()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        multiplexer.cleanup()
+        muxer = PicADSBMultiplexer(
+            tcp_port=args.port,
+            serial_port=args.device,
+            log_level=args.log,
+            skip_init=args.no_init
+        )
+        muxer.run()
+    except Exception as e:
+        print(f"Error: {e}")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
