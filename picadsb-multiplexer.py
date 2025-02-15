@@ -320,13 +320,28 @@ class PicADSBMultiplexer:
             time.sleep(0.01)
         return None
 
+    def _cleanup_invalid_clients(self):
+        """Remove invalid client sockets."""
+        invalid_clients = []
+        for client in self.clients:
+            try:
+                client.getpeername()
+            except OSError:
+                invalid_clients.append(client)
+
+        for client in invalid_clients:
+            self._remove_client(client)
+
     def _handle_client_connections(self):
         """Handle new client connections and data with improved keepalive."""
         try:
             current_time = time.time()
 
-            # Check for new connections and data
-            readable, _, _ = select.select([self.server_socket] + self.clients, [], [], 0.1)
+            try:
+                readable, _, _ = select.select([self.server_socket] + self.clients, [], [], 0.1)
+            except select.error:
+                self._cleanup_invalid_clients()
+                return
 
             for sock in readable:
                 if sock is self.server_socket:
@@ -353,8 +368,8 @@ class PicADSBMultiplexer:
                             # Handle regular data
                             self._handle_client_data(sock, data)
 
-                    except Exception as e:
-                        self.logger.debug(f"Error reading from client: {e}")
+                    except (ConnectionError, OSError) as e:
+                        self.logger.debug(f"Connection error: {e}")
                         self._remove_client(sock)
 
             # Send keepalive to idle clients
@@ -393,23 +408,35 @@ class PicADSBMultiplexer:
     def _remove_client(self, client: socket.socket):
         """Remove client and clean up resources."""
         try:
-            self.clients.remove(client)
-            self.client_last_active.pop(client, None)
-            client.close()
+            if client in self.clients:
+                self.clients.remove(client)
+            if client in self.client_last_active:
+                self.client_last_active.pop(client)
+
+            try:
+                client.getpeername()
+                client.close()
+            except OSError:
+                pass
+
             self.stats['clients_current'] = len(self.clients)
-            self.logger.info(f"Client {client.getpeername()} disconnected")
+            self.logger.info("Client disconnected")
         except Exception as e:
             self.logger.debug(f"Error removing client: {e}")
 
     def _handle_client_data(self, client: socket.socket, data: bytes):
         """Handle regular data from client."""
         try:
+            client.getpeername()
+
             # Update last active time
             self.client_last_active[client] = time.time()
 
             # Process client data if needed
             self.logger.debug(f"Received data from {client.getpeername()}: {data!r}")
 
+        except OSError:
+            self._remove_client(client)
         except Exception as e:
             self.logger.error(f"Error handling client data: {e}")
 
