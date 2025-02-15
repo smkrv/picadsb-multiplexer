@@ -3,10 +3,23 @@ FROM --platform=$TARGETPLATFORM python:3.11-slim
 # Install required system packages
 RUN apt-get update && apt-get install -y \
     udev \
+    logrotate \
     && rm -rf /var/lib/apt/lists/*
 
 # Create app directory
 WORKDIR /app
+
+# Configure logrotate
+RUN echo '/app/logs/*.log {
+    daily
+    rotate 7
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 644 root root
+    size 10M
+}' > /etc/logrotate.d/application
 
 # Copy requirements
 COPY requirements.txt .
@@ -29,6 +42,9 @@ ENV ADSB_TCP_PORT=30002
 ENV ADSB_DEVICE=/dev/ttyACM0
 ENV ADSB_LOG_LEVEL=INFO
 ENV ADSB_NO_INIT=false
+# Log management settings
+ENV MAX_LOG_SIZE=100M        # Maximum size of logs directory before cleanup
+ENV LOG_RETENTION_DAYS=7     # Number of days to keep logs  
 
 # Expose the default port
 EXPOSE ${ADSB_TCP_PORT}
