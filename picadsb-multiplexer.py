@@ -46,6 +46,10 @@ class PicADSBMultiplexer:
     KEEPALIVE_INTERVAL = 30
     SERIAL_BUFFER_SIZE = 131072
     MAX_MESSAGE_LENGTH = 50
+    NO_DATA_TIMEOUT = 60  # seconds
+    VERSION_CHECK_TIMEOUT = 60  # seconds
+    MAX_RECONNECT_ATTEMPTS = 3
+    RECONNECT_DELAY = 5  # seconds
 
     def _setup_logging(self, log_level: str):
         """Configure logging with both file and console output."""
@@ -351,6 +355,62 @@ class PicADSBMultiplexer:
             self.logger.error(f"Error in serial processing: {e}")
             self.stats['errors'] += 1
 
+    def _check_device_status(self):
+        """Check device status if no data received for a while."""
+        current_time = time.time()
+
+        if current_time - self._last_data_time > self.NO_DATA_TIMEOUT:
+            if not self._no_data_logged:
+                self.logger.warning(f"No data received for {self.NO_DATA_TIMEOUT} seconds, checking device...")
+                self._no_data_logged = True
+
+            self.ser.write(self.format_command(b'\x00'))
+            response = self._read_response()
+
+            if not response or not self.verify_response(b'\x00', response):
+                self.logger.error("Device not responding to version check")
+                if not self._reconnect():
+                    self.logger.error("Failed to reconnect to device")
+                    self.running = False
+            else:
+                self.logger.info("Device responding normally despite no data")
+                self._no_data_logged = False
+                self._last_data_time = current_time
+
+    def _reconnect(self) -> bool:
+        """Attempt to reconnect to the device with multiple retries."""
+        self.logger.info("Attempting to reconnect...")
+
+        for attempt in range(self.MAX_RECONNECT_ATTEMPTS):
+            try:
+                self.logger.info(f"Reconnection attempt {attempt + 1}/{self.MAX_RECONNECT_ATTEMPTS}")
+
+                if hasattr(self, 'ser') and self.ser.is_open:
+                    self.ser.close()
+
+                time.sleep(self.RECONNECT_DELAY)
+
+                self._init_serial()
+
+                self.ser.write(self.format_command(b'\x00'))
+                response = self._read_response()
+
+                if response and self.verify_response(b'\x00', response):
+                    self.logger.info("Successfully reconnected to device")
+                    self.stats['reconnects'] += 1
+                    self._last_data_time = time.time()
+                    self._no_data_logged = False
+                    return True
+
+            except Exception as e:
+                self.logger.error(f"Reconnection attempt {attempt + 1} failed: {e}")
+
+            self.logger.warning(f"Reconnection attempt {attempt + 1} failed, waiting {self.RECONNECT_DELAY} seconds...")
+            time.sleep(self.RECONNECT_DELAY)
+
+        self.logger.error(f"Failed to reconnect after {self.MAX_RECONNECT_ATTEMPTS} attempts")
+        return False
+
     def _update_stats(self):
         """Update and log periodic statistics."""
         current_time = time.time()
@@ -460,13 +520,13 @@ class PicADSBMultiplexer:
         """Check for timeouts and inactive clients."""
         current_time = time.time()
 
-        if current_time - self._last_data_time > 30 and not self._no_data_logged:
-            self.logger.warning("No data received for 30 seconds")
-            self._no_data_logged = True
+        if current_time - self._last_data_time > self.NO_DATA_TIMEOUT and not self._no_data_logged:
+            self.logger.warning(f"No data received for {self.NO_DATA_TIMEOUT} seconds")
+            self._check_device_status()
 
         for client in list(self.clients):
-            if current_time - self.client_last_active.get(client, 0) > 60:
-                self.logger.info(f"Closing inactive client {client.getpeername()}")
+            if current_time - self.client_last_active.get(client, 0) > self.NO_DATA_TIMEOUT:
+                self.logger.warning(f"Closing inactive client {client.getpeername()}")
                 self._remove_client(client)
 
     def validate_message(self, message: bytes) -> bool:

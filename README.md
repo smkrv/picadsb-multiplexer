@@ -23,13 +23,13 @@ The device works perfectly on Raspberry Pi and other Unix-based systems, making 
 - Automatic reconnection on device errors
 
 ## Device Specifications
-- Original adsbPIC creator: [Sprut](https://sprut.de/electronic/pic/projekte/adsb/adsb_en.html)
+- Original adsbPIC creator: Joerg Bredendiek — [Sprut](https://sprut.de/electronic/pic/projekte/adsb/adsb_en.html)
 - Device: MicroADSB USB receiver (≈2010-20??)
 - Manufacturer: Miroslav Ionov
   - MicroADSB.com (website no longer available), last archived copy on WebArchive: [September 18, 2024](https://web.archive.org/web/20240918230020/http://www.microadsb.com/)
   - Anteni.net (active as of Feb 2025)
 - Microcontroller: PIC18F2550
-- Firmware: [Sprut](https://sprut.de)
+- Firmware: Joerg Bredendiek — [Sprut](https://sprut.de)
 - Maximum theoretical frame rate: 200,000 fpm
 - Practical maximum frame rate: ≈6,000 fpm
 - Communication: USB CDC (115200 baud)
@@ -400,7 +400,7 @@ tail -f logs/adsb_muxer_*.log
 
 ## Acknowledgments
 
-- Original adsbPIC creator & firmware by [Sprut](https://sprut.de)
+- Original adsbPIC creator & firmware by Joerg Bredendiek — [Sprut](https://sprut.de)
 - Original MicroADSB device by Miroslav Ionov
 - [dump1090](https://github.com/antirez/dump1090) project for ADS-B decoding
 
