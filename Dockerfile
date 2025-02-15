@@ -28,6 +28,7 @@ RUN chmod +x /app/entrypoint.sh
 ENV ADSB_TCP_PORT=30002
 ENV ADSB_DEVICE=/dev/ttyACM0
 ENV ADSB_LOG_LEVEL=INFO
+ENV ADSB_NO_INIT=false
 
 # Expose the default port
 EXPOSE ${ADSB_TCP_PORT}
