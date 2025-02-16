@@ -256,12 +256,12 @@ class PicADSBMultiplexer:
             self.logger.error(f"Error during device reset: {e}")
             raise
 
-    def _initialize_device(self) -> bool:
+    def _initialize_device(self) -> bool:  
         """Initialize device with specific command sequence."""
         commands = [
-#            (b'\xFF', "Reset all"),             # #FF-
-            (b'\x00', "Version check"),         # #00-
             (b'\x43\x00', "Stop reception"),    # #43-00-
+            (b'\xFF', "Reset all"),             # #FF-
+            (b'\x00', "Version check"),         # #00-
             (b'\x51\x01\x00', "Set mode"),      # #51-01-00-
             (b'\x37\x03', "Set filter"),        # #37-03-
             (b'\x43\x00', "Status check 1"),    # #43-00-
@@ -277,7 +277,13 @@ class PicADSBMultiplexer:
             self.logger.debug(f"Sending {desc}: {cmd.hex()}")
             formatted_cmd = self.format_command(cmd)
             self.ser.write(formatted_cmd)
-            time.sleep(1.9)
+
+            # Special handling for Reset command
+            if cmd == b'\xFF':
+                time.sleep(4.0)  # 4 second delay for reset command
+                continue  # Skip response checking for reset command
+
+            time.sleep(1.9)  # Normal delay for other commands
 
             response = self._read_response()
             if response:
