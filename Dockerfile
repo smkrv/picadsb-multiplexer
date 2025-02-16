@@ -29,10 +29,12 @@ RUN mkdir -p /app/logs
 RUN chmod +x /app/entrypoint.sh
 
 # Set environment variables with defaults
-ENV ADSB_TCP_PORT=30002
+ENV ADSB_TCP_PORT=31002
 ENV ADSB_DEVICE=/dev/ttyACM0
 ENV ADSB_LOG_LEVEL=INFO
 ENV ADSB_NO_INIT=false
+ENV ADSB_REMOTE_HOST=127.0.0.1
+ENV ADSB_REMOTE_PORT=30002
 
 # Log management settings
 ENV MAX_LOG_SIZE=100M

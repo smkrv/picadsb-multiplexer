@@ -38,6 +38,8 @@ chmod 666 ${ADSB_DEVICE}
 # Start the multiplexer
 exec python3 -u picadsb-multiplexer.py \
     --port ${ADSB_TCP_PORT} \
+    --remote-port ${ADSB_REMOTE_PORT} \
+    --remote-host ${ADSB_REMOTE_HOST} \
     --serial ${ADSB_DEVICE} \
     --log-level ${ADSB_LOG_LEVEL} \
     $([ "$ADSB_NO_INIT" = "true" ] && echo "--no-init")
