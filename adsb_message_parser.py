@@ -1,12 +1,7 @@
 #!/usr/bin/env python3
 """
-ADS-B Message Monitor (DEBUG)
-Displays ADS-B messages in a formatted table with message type identification and timestamp.
-
-@license: CC BY-NC-SA 4.0 International
-@author: SMKRV
-@github: https://github.com/smkrv/picadsb-multiplexer
-@source: https://github.com/smkrv/picadsb-multiplexer
+ADS-B Message Monitor
+Displays ADS-B messages in both formatted and RAW formats with message type identification and timestamp.
 """
 
 import socket
@@ -45,11 +40,15 @@ class ADSBMonitor:
         'A7': 'ACAS Resolution Advisory (DF20)',
     }
 
-    def __init__(self, host: str = 'localhost', port: int = 30002):
+    def __init__(self, host: str = 'localhost', port: int = 30002, raw_mode: bool = False):
         self.host = host
         self.port = port
         self.running = True
         self.socket = None
+        self.raw_mode = raw_mode
+        self.reconnect_delay = 5  # Initial reconnect delay in seconds
+        self.max_reconnect_delay = 30  # Maximum reconnect delay
+        self.header_printed = False  # Flag to track if header was printed
         self.stats = {
             'total_messages': 0,
             'start_time': time.time(),
@@ -62,11 +61,14 @@ class ADSBMonitor:
 
     def print_header(self):
         """Print the table header with column names"""
-        print("\nADS-B Message Monitor")
-        print(f"Connected to {self.host}:{self.port}")
-        print("\n{:<23} | {:<8} | {:<45} | {:<20}".format(
-            "Timestamp", "Type", "Message", "Description"))
-        print("-" * 100)
+        if not self.header_printed:
+            print("\nADS-B Message Monitor")
+            print(f"Connected to {self.host}:{self.port}")
+            if not self.raw_mode:
+                print("\n{:<23} | {:<8} | {:<45} | {:<20}".format(
+                    "Timestamp", "Type", "Message", "Description"))
+                print("-" * 100)
+            self.header_printed = True
 
     def identify_message_type(self, message: str) -> str:
         """Extract and identify message type from the message"""
@@ -139,63 +141,88 @@ class ADSBMonitor:
             except Exception:
                 pass  # Ignore close errors
             self.socket = None
-        print("\nConnection closed")
-        self.print_stats()
 
     def connect(self) -> bool:
         """Establish connection to the ADS-B server"""
         try:
+            if self.socket:
+                self.cleanup()
+
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.socket.settimeout(5)  # Connection timeout
             self.socket.connect((self.host, self.port))
             self.socket.setblocking(False)  # Set non-blocking mode
+            if not self.header_printed:
+                self.print_header()
             return True
         except Exception as e:
-            print(f"Connection error: {e}")
-            self.cleanup()
+            print(f"\rConnection error: {e}", end='')
             return False
 
+    def process_message(self, msg: bytes):
+        """Process and display message in either RAW or formatted mode"""
+        if self.raw_mode:
+            # RAW mode - display message as is
+            try:
+                print(msg.decode('ascii').strip())
+            except Exception as e:
+                print(f"Error decoding message: {e}")
+        else:
+            # Formatted mode
+            if msg.startswith(b'*'):
+                formatted_msg = self.format_message(msg + b';')
+                if formatted_msg:  # Only print if not a keep-alive message
+                    timestamp, msg_type, message, description = formatted_msg
+                    print("\r{:<23} | {:<8} | {:<45} | {:<20}".format(
+                        timestamp, msg_type, message, description))
+                    # Print RAW format below
+                    print(f"\rRAW: {message}")
+                    print("\r" + "-" * 100)
+
     def run(self):
-        """Main processing loop"""
-        try:
-            if not self.connect():
-                return
+        """Main processing loop with automatic reconnection"""
+        self.print_header()  # Print header once at start
 
-            self.print_header()
+        while self.running:
+            try:
+                if not self.connect():
+                    print(f"\rWaiting for connection... ", end='')
+                    time.sleep(self.reconnect_delay)
+                    self.reconnect_delay = min(self.reconnect_delay * 2, self.max_reconnect_delay)
+                    continue
 
-            while self.running:
-                ready = select.select([self.socket], [], [], 1.0)
+                self.reconnect_delay = 5  # Reset reconnect delay after successful connection
 
-                if ready[0]:
-                    try:
-                        data = self.socket.recv(1024)
-                        if not data:
-                            print("Connection closed by server")
-                            break
+                while self.running:
+                    ready = select.select([self.socket], [], [], 1.0)
 
-                        messages = data.split(b';')
-                        for msg in messages:
-                            if msg.startswith(b'*'):
-                                formatted_msg = self.format_message(msg + b';')
-                                if formatted_msg:  # Only print if not a keep-alive message
-                                    timestamp, msg_type, message, description = formatted_msg
-                                    print("{:<23} | {:<8} | {:<45} | {:<20}".format(
-                                        timestamp, msg_type, message, description))
+                    if ready[0]:
+                        try:
+                            data = self.socket.recv(1024)
+                            if not data:
+                                print("\rConnection lost. Attempting to reconnect...", end='')
+                                break
 
-                    except socket.error as e:
-                        if e.errno != socket.EAGAIN and e.errno != socket.EWOULDBLOCK:
-                            print(f"Socket error: {e}")
-                            break
+                            messages = data.split(b';')
+                            for msg in messages:
+                                if msg:  # Skip empty messages
+                                    self.process_message(msg)
 
-                if not self.running:
-                    break
+                        except socket.error as e:
+                            if e.errno != socket.EAGAIN and e.errno != socket.EWOULDBLOCK:
+                                print(f"\rSocket error: {e}", end='')
+                                break
 
-        except KeyboardInterrupt:
-            print("\nUser interrupted")
-        except Exception as e:
-            print(f"Error: {e}")
-        finally:
-            self.cleanup()
+            except KeyboardInterrupt:
+                print("\nUser interrupted")
+                break
+            except Exception as e:
+                print(f"\rError: {e}", end='')
+                time.sleep(self.reconnect_delay)
+                self.reconnect_delay = min(self.reconnect_delay * 2, self.max_reconnect_delay)
+
+        self.cleanup()
+        self.print_stats()
 
 def main():
     """Entry point of the program"""
@@ -204,10 +231,11 @@ def main():
     parser = argparse.ArgumentParser(description='ADS-B Message Monitor')
     parser.add_argument('--host', default='localhost', help='Server host (default: localhost)')
     parser.add_argument('--port', type=int, default=30002, help='Server port (default: 30002)')
+    parser.add_argument('--raw', action='store_true', help='Display messages in RAW format only')
 
     args = parser.parse_args()
 
-    monitor = ADSBMonitor(args.host, args.port)
+    monitor = ADSBMonitor(args.host, args.port, args.raw)
     monitor.run()
 
 if __name__ == "__main__":
