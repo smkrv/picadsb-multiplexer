@@ -256,11 +256,12 @@ class PicADSBMultiplexer:
             self.logger.error(f"Error during device reset: {e}")
             raise
 
-    def _initialize_device(self) -> bool:  
+    def _initialize_device(self) -> bool:
         """Initialize device with specific command sequence."""
         commands = [
             (b'\x43\x00', "Stop reception"),    # #43-00-
             (b'\xFF', "Reset all"),             # #FF-
+            (b'\x43\x00', "Stop reception"),    # #43-00-
             (b'\x00', "Version check"),         # #00-
             (b'\x51\x01\x00', "Set mode"),      # #51-01-00-
             (b'\x37\x03', "Set filter"),        # #37-03-
