@@ -170,6 +170,7 @@ class PicADSBMultiplexer:
 
             self.ser.reset_input_buffer()
             self.ser.reset_output_buffer()
+            time.sleep(0.5)
 
             self.ser.setDTR(False)
             self.ser.setRTS(False)
@@ -202,7 +203,7 @@ class PicADSBMultiplexer:
     def _read_response(self) -> Optional[bytes]:
         """Read response from device with timeout."""
         buffer = b''
-        timeout = time.time() + 1.0  # 1 second timeout
+        timeout = time.time() + 2.0  # 2 second timeout
 
         while time.time() < timeout:
             if self.ser.in_waiting:
@@ -256,7 +257,6 @@ class PicADSBMultiplexer:
             raise
 
     def _initialize_device(self) -> bool:
-        """Initialize device with specific command sequence."""
         commands = [
             (b'\x00', "Version check"),
             (b'\x43\x00', "Stop reception"),
@@ -267,6 +267,7 @@ class PicADSBMultiplexer:
             (b'\x51\x00\x00', "Reset mode"),
             (b'\x37\x03', "Set filter again"),
             (b'\x43\x02', "Status check 3"),
+            (b'\x51\x01\x00', "Set final mode"), # Добавлена эта команда
             (b'\x38', "Start reception")
         ]
 
@@ -341,31 +342,41 @@ class PicADSBMultiplexer:
                 return
 
             if self.ser.in_waiting:
+                self._last_data_time = time.time()
                 data = self.ser.read(self.ser.in_waiting)
                 self.stats['bytes_received'] += len(data)
 
                 for byte in data:
-                    if byte in b'*#@':
+                    byte = bytes([byte])
+
+                    if byte in b'*#@':  # Message start markers
+                        if self._buffer and len(self._buffer) > 1:  # Don't log empty buffers
+                            self.logger.debug(f"Incomplete message: {self._buffer!r}")
+                        self._buffer = byte
+                        continue
+
+                    if not self._buffer:  # Skip bytes until start marker
+                        continue
+
+                    if byte in b'\r\n;':  # Message terminators
                         if self._buffer:
-                            self.logger.debug(f"Discarding buffer: {self._buffer!r}")
-                        self._buffer = bytes([byte])
-                        self._sync_state = True
-                    elif byte in b'\r\n;':
-                        if self._buffer:
-                            if self.validate_message(self._buffer):
+                            message = self._buffer
+                            if self.validate_message(message):
                                 try:
-                                    self.message_queue.put_nowait(self._buffer + b'\n')
+                                    self.message_queue.put_nowait(message + b'\n')
                                     self.stats['messages_processed'] += 1
+                                    self.logger.debug(f"Processed message: {message!r}")
                                 except queue.Full:
                                     self.stats['messages_dropped'] += 1
+                            else:
+                                self.stats['invalid_messages'] += 1
+                                self.logger.debug(f"Invalid message: {message!r}")
                             self._buffer = b''
                     else:
-                        if self._sync_state:
-                            self._buffer += bytes([byte])
-                            if len(self._buffer) > self.MAX_MESSAGE_LENGTH:
-                                self._buffer = b''
-                                self._sync_state = False
-                                self.stats['buffer_overflows'] += 1
+                        self._buffer += byte
+                        if len(self._buffer) > self.MAX_MESSAGE_LENGTH:
+                            self.stats['buffer_overflows'] += 1
+                            self._buffer = b''
 
         except Exception as e:
             self.logger.error(f"Error in serial processing: {e}")
@@ -601,17 +612,21 @@ class PicADSBMultiplexer:
         """Validate message format."""
         try:
             if len(message) < 3:
+                self.logger.debug(f"Message too short: {message!r}")
                 return False
 
             if not message.startswith((b'*', b'#', b'@')):
+                self.logger.debug(f"Invalid start marker: {message!r}")
                 return False
 
             if not message.rstrip(b'\r\n').endswith(b';'):
+                self.logger.debug(f"Missing terminator: {message!r}")
                 return False
 
             content = message[1:-1]
             valid_chars = set(b'0123456789ABCDEF-')
             if not all(b in valid_chars for b in content):
+                self.logger.debug(f"Invalid characters in message: {message!r}")
                 return False
 
             return True
