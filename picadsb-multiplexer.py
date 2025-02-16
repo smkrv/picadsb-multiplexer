@@ -259,7 +259,7 @@ class PicADSBMultiplexer:
     def _initialize_device(self) -> bool:
         """Initialize device with specific command sequence."""
         commands = [
-            (b'\xFF', "Reset all"),             # #FF-
+#            (b'\xFF', "Reset all"),             # #FF-
             (b'\x00', "Version check"),         # #00-
             (b'\x43\x00', "Stop reception"),    # #43-00-
             (b'\x51\x01\x00', "Set mode"),      # #51-01-00-
