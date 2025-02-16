@@ -257,25 +257,25 @@ class PicADSBMultiplexer:
             raise
 
     def _initialize_device(self) -> bool:
+        """Initialize device with specific command sequence."""
         commands = [
-            (b'\x00', "Version check"),
-            (b'\x43\x00', "Stop reception"),
-            (b'\x51\x01\x00', "Set mode"),
-            (b'\x37\x03', "Set filter"),
-            (b'\x43\x02', "Status check 1"),
-            (b'\x43\x00', "Status check 2"),
-            (b'\x51\x00\x00', "Reset mode"),
-            (b'\x37\x03', "Set filter again"),
-            (b'\x43\x02', "Status check 3"),
-            (b'\x51\x01\x00', "Set final mode"), # Добавлена эта команда
-            (b'\x38', "Start reception")
+            (b'\x00', "Version check"),         # #00-
+            (b'\x43\x00', "Stop reception"),    # #43-00-
+            (b'\x51\x01\x00', "Set mode"),      # #51-01-00-
+            (b'\x37\x03', "Set filter"),        # #37-03-
+            (b'\x43\x02', "Status check 1"),    # #43-02-
+            (b'\x43\x00', "Status check 2"),    # #43-00-
+            (b'\x51\x00\x00', "Reset mode"),    # #51-00-00-
+            (b'\x37\x03', "Set filter again"),  # #37-03-
+            (b'\x43\x02', "Status check 3"),    # #43-02-
+            (b'\x38', "Start reception")        # #38-
         ]
 
         for cmd, desc in commands:
             self.logger.debug(f"Sending {desc}: {cmd.hex()}")
             formatted_cmd = self.format_command(cmd)
             self.ser.write(formatted_cmd)
-            time.sleep(0.5)
+            time.sleep(1.5)
 
             response = self._read_response()
             if response:
@@ -303,23 +303,15 @@ class PicADSBMultiplexer:
             resp_bytes = [int(x, 16) for x in response[1:].decode().strip('-').split('-')]
 
             if cmd[0] == 0x00:  # Version command
-                return (resp_bytes[0] == 0x00 and
-                       resp_bytes[2] == 0x05 and
-                       resp_bytes[3] == 0x04)
-            elif cmd[0] == 0x43:  # Mode commands
-                return (resp_bytes[0] == 0x43 and
-                       resp_bytes[1] == cmd[1] and
-                       all(x == 0 for x in resp_bytes[2:]))
-            elif cmd[0] == 0x44:  # UREF offset command
-                return (resp_bytes[0] == 0x44 and
-                       resp_bytes[1] == cmd[1])
+                return resp_bytes[0] == 0x00
+            elif cmd[0] == 0x43:  # Stop/Status commands
+                return resp_bytes[0] == 0x43 and resp_bytes[1] == cmd[1]
+            elif cmd[0] == 0x51:  # Mode commands
+                return resp_bytes[0] == 0x51 and resp_bytes[1] == cmd[1]
             elif cmd[0] == 0x37:  # Filter command
-                return (resp_bytes[0] == 0x37 and
-                       resp_bytes[1] == 0x03)
-            elif cmd[0] == 0x38:  # Start command
-                return (resp_bytes[0] == 0x38 and
-                       resp_bytes[2] == 0x01 and
-                       resp_bytes[3] == 0x64)
+                return resp_bytes[0] == 0x37
+            elif cmd[0] == 0x38:  # Start reception
+                return resp_bytes[0] == 0x38 and resp_bytes[2] == 0x01
 
             return True
         except Exception as e:
