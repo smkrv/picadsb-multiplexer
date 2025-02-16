@@ -357,26 +357,23 @@ class PicADSBMultiplexer:
                 if byte in [b'\r', b'\n']:
                     return
 
-                # Updated message start detection
                 if byte in [b'#', b'*', b'@', b'.']:
-                    if self._buffer and len(self._buffer) > 1:
+                    if self._buffer:
                         self.logger.debug(f"Discarding incomplete buffer: {self._buffer!r}")
                         self.stats['sync_losses'] += 1
                     self._buffer = byte
                     self._sync_state = True
                     return
 
-                # Handle message end
-                if byte in [b';', b'\r', b'\n']:
+                if byte == b';':
                     if not self._sync_state:
                         return
 
                     self._buffer += byte
                     if len(self._buffer) > 2:
-                        if self.validate_message(self._buffer):
+                        if not self._buffer.startswith(b'#'):
                             try:
-                                clean_msg = self._buffer.rstrip(b'\r\n;')
-                                formatted_msg = clean_msg + b';\n'
+                                formatted_msg = self._buffer + b'\n'
                                 self.message_queue.put_nowait(formatted_msg)
                                 self.stats['messages_processed'] += 1
                                 self.logger.debug(f"Message queued: {formatted_msg!r}")
@@ -386,7 +383,6 @@ class PicADSBMultiplexer:
                     self._buffer = b''
                     return
 
-                # Accumulate message data
                 if not self._sync_state:
                     return
 
@@ -398,7 +394,7 @@ class PicADSBMultiplexer:
                     self._sync_state = False
 
             else:
-                time.sleep(0.001)  # Reduced sleep time
+                time.sleep(0.001)
 
         except Exception as e:
             self.logger.error(f"Error in serial processing: {e}")
@@ -637,28 +633,20 @@ class PicADSBMultiplexer:
             if len(message) < 3:
                 return False
 
-            if not message.startswith((b'*', b'#', b'@', b'.')):
+            if message.startswith(b'#'):
+                return False
+
+            if not message.startswith((b'*', b'@', b'.')):
                 return False
 
             if not message.rstrip(b'\r\n').endswith(b';'):
                 return False
 
-            msg_body = message[1:-1].rstrip(b'\r\n;')
-
-            if message.startswith(b'#'):
-                valid_chars = set(b'0123456789ABCDEF-')
-                return all(b in valid_chars for b in msg_body)
-
-            elif message.startswith((b'*', b'@', b'.')):
-                valid_chars = set(b'0123456789ABCDEF')
-                return all(b in valid_chars for b in msg_body)
-
-            return False
+            return True
 
         except Exception as e:
             self.logger.error(f"Message validation error: {e}")
             return False
-
 
     def _signal_handler(self, signum, frame):
         """Handle shutdown signals."""
