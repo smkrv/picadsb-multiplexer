@@ -258,7 +258,8 @@ class PicADSBMultiplexer:
 
     def _initialize_device(self) -> bool:
         """Initialize device with specific command sequence."""
-        commands = [  
+        commands = [
+            (b'\xFF', "Reset all"),             # #FF-
             (b'\x00', "Version check"),         # #00-
             (b'\x43\x00', "Stop reception"),    # #43-00-
             (b'\x51\x01\x00', "Set mode"),      # #51-01-00-
@@ -276,7 +277,7 @@ class PicADSBMultiplexer:
             self.logger.debug(f"Sending {desc}: {cmd.hex()}")
             formatted_cmd = self.format_command(cmd)
             self.ser.write(formatted_cmd)
-            time.sleep(1.5)
+            time.sleep(1.9)
 
             response = self._read_response()
             if response:
@@ -328,12 +329,14 @@ class PicADSBMultiplexer:
         return True
 
     def _process_serial_data(self):
-        """Process incoming data from the ADSB device."""
+        """Process incoming data from the ADSB device with relaxed validation."""
         try:
+            # Check if serial port is available
             if not self.ser.is_open:
                 self.logger.error("Serial port is closed")
                 return
 
+            # Check for available data
             if self.ser.in_waiting:
                 self._last_data_time = time.time()
                 data = self.ser.read(self.ser.in_waiting)
@@ -342,17 +345,23 @@ class PicADSBMultiplexer:
                 for byte in data:
                     byte = bytes([byte])
 
-                    if byte in b'*#@':  # Message start markers
-                        if self._buffer and len(self._buffer) > 1:
+                    # Extended set of message start markers
+                    if byte in b'*#@$%&':
+                        # Only log really long incomplete messages
+                        if self._buffer and len(self._buffer) > 5:
                             self.logger.debug(f"Incomplete message: {self._buffer!r}")
                         self._buffer = byte
                         continue
 
-                    if not self._buffer:  # Skip bytes until start marker
+                    # Skip bytes until start marker
+                    if not self._buffer:
                         continue
 
-                    if byte == b';':  # Message terminator
+                    # Message terminator handling
+                    if byte == b';':
                         self._buffer += byte
+
+                        # Try to process the message even if validation fails
                         if self.validate_message(self._buffer):
                             try:
                                 self.message_queue.put_nowait(self._buffer + b'\n')
@@ -361,13 +370,35 @@ class PicADSBMultiplexer:
                             except queue.Full:
                                 self.stats['messages_dropped'] += 1
                         else:
-                            self.stats['invalid_messages'] += 1
+                            # Attempt to recover partial message if it's long enough
+                            if len(self._buffer) > 3:
+                                try:
+                                    self.message_queue.put_nowait(self._buffer + b'\n')
+                                    self.stats['recovered_messages'] += 1
+                                    self.logger.debug(f"Recovered partial message: {self._buffer!r}")
+                                except queue.Full:
+                                    self.stats['messages_dropped'] += 1
+                            else:
+                                self.stats['invalid_messages'] += 1
                         self._buffer = b''
                     else:
                         self._buffer += byte
+                        # Handle buffer overflow by keeping the last part
                         if len(self._buffer) > self.MAX_MESSAGE_LENGTH:
-                            self.stats['buffer_overflows'] += 1
-                            self._buffer = b''
+                            self._buffer = self._buffer[-self.MAX_MESSAGE_LENGTH:]
+                            self.stats['buffer_truncated'] += 1
+
+                # Handle timeout for incomplete messages
+                if self._buffer and time.time() - self._last_data_time > 1.0:
+                    if len(self._buffer) > 3:
+                        self._buffer += b';'  # Add terminator
+                        try:
+                            self.message_queue.put_nowait(self._buffer + b'\n')
+                            self.stats['timeout_processed'] += 1
+                            self.logger.debug(f"Timeout processed message: {self._buffer!r}")
+                        except queue.Full:
+                            self.stats['messages_dropped'] += 1
+                    self._buffer = b''
 
         except Exception as e:
             self.logger.error(f"Error in serial processing: {e}")
