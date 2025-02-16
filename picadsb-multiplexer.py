@@ -263,12 +263,13 @@ class PicADSBMultiplexer:
             (b'\x43\x00', "Stop reception"),    # #43-00-
             (b'\x51\x01\x00', "Set mode"),      # #51-01-00-
             (b'\x37\x03', "Set filter"),        # #37-03-
-            (b'\x43\x02', "Status check 1"),    # #43-02-
+            (b'\x43\x00', "Status check 1"),    # #43-00-
             (b'\x43\x00', "Status check 2"),    # #43-00-
             (b'\x51\x00\x00', "Reset mode"),    # #51-00-00-
             (b'\x37\x03', "Set filter again"),  # #37-03-
-            (b'\x43\x02', "Status check 3"),    # #43-02-
-            (b'\x38', "Start reception")        # #38-
+            (b'\x43\x00', "Status check 3"),    # #43-00-
+            (b'\x38', "Start reception"),       # #38-
+            (b'\x43\x02', "Enable data")        # #43-02- (это включает поток данных)
         ]
 
         for cmd, desc in commands:
@@ -342,7 +343,7 @@ class PicADSBMultiplexer:
                     byte = bytes([byte])
 
                     if byte in b'*#@':  # Message start markers
-                        if self._buffer and len(self._buffer) > 1:  # Don't log empty buffers
+                        if self._buffer and len(self._buffer) > 1:
                             self.logger.debug(f"Incomplete message: {self._buffer!r}")
                         self._buffer = byte
                         continue
@@ -350,20 +351,18 @@ class PicADSBMultiplexer:
                     if not self._buffer:  # Skip bytes until start marker
                         continue
 
-                    if byte in b'\r\n;':  # Message terminators
-                        if self._buffer:
-                            message = self._buffer
-                            if self.validate_message(message):
-                                try:
-                                    self.message_queue.put_nowait(message + b'\n')
-                                    self.stats['messages_processed'] += 1
-                                    self.logger.debug(f"Processed message: {message!r}")
-                                except queue.Full:
-                                    self.stats['messages_dropped'] += 1
-                            else:
-                                self.stats['invalid_messages'] += 1
-                                self.logger.debug(f"Invalid message: {message!r}")
-                            self._buffer = b''
+                    if byte == b';':  # Message terminator
+                        self._buffer += byte
+                        if self.validate_message(self._buffer):
+                            try:
+                                self.message_queue.put_nowait(self._buffer + b'\n')
+                                self.stats['messages_processed'] += 1
+                                self.logger.debug(f"Processed message: {self._buffer!r}")
+                            except queue.Full:
+                                self.stats['messages_dropped'] += 1
+                        else:
+                            self.stats['invalid_messages'] += 1
+                        self._buffer = b''
                     else:
                         self._buffer += byte
                         if len(self._buffer) > self.MAX_MESSAGE_LENGTH:
@@ -448,6 +447,22 @@ class PicADSBMultiplexer:
                 self.logger.debug("Resetting input buffer due to sync loss")
 
         self._last_sync_time = current_time
+
+    def shutdown(self):
+        """Gracefully shutdown the device."""
+        try:
+            # Stop reception
+            self.ser.write(self.format_command(b'\x43\x00'))
+            time.sleep(1.0)
+
+            # Send FF command
+            self.ser.write(b'#FF-\r')
+            time.sleep(0.5)
+
+            self.ser.close()
+        except Exception as e:
+            self.logger.error(f"Error during shutdown: {e}")
+
 
     def _update_stats(self):
         """Update and log periodic statistics."""
@@ -611,17 +626,22 @@ class PicADSBMultiplexer:
                 self.logger.debug(f"Invalid start marker: {message!r}")
                 return False
 
-            if not message.rstrip(b'\r\n').endswith(b';'):
+            if not message.endswith(b';'):
                 self.logger.debug(f"Missing terminator: {message!r}")
                 return False
 
-            content = message[1:-1]
-            valid_chars = set(b'0123456789ABCDEF-')
-            if not all(b in valid_chars for b in content):
-                self.logger.debug(f"Invalid characters in message: {message!r}")
-                return False
+            if message.startswith(b'*'):
+                content = message[1:-1]
+                valid_chars = set(b'0123456789ABCDEF')
+                if not all(b in valid_chars for b in content):
+                    self.logger.debug(f"Invalid characters in message: {message!r}")
+                    return False
 
             return True
+
+        except Exception as e:
+            self.logger.error(f"Message validation error: {e}")
+            return False
 
         except Exception as e:
             self.logger.error(f"Message validation error: {e}")
