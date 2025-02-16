@@ -263,6 +263,7 @@ class PicADSBMultiplexer:
         commands = [
             (b'\x00', "Version request"),
             (b'\x43\x00', "Stop reception"),
+            (b'\x44\x64', "Set UREF offset 100mV"),
             (b'\x51\x01\x00', "Set mode"),
             (b'\x37\x03', "Set filter"),
             (b'\x43\x00', "Status check 1"),
@@ -313,6 +314,9 @@ class PicADSBMultiplexer:
                 return (resp_bytes[0] == 0x43 and
                        resp_bytes[1] == cmd[1] and
                        all(x == 0 for x in resp_bytes[2:]))
+            elif cmd[0] == 0x44:  # UREF offset command
+                return (resp_bytes[0] == 0x44 and
+                       resp_bytes[1] == cmd[1])
             elif cmd[0] == 0x37:  # Filter command
                 return (resp_bytes[0] == 0x37 and
                        resp_bytes[1] == 0x03)
@@ -345,36 +349,37 @@ class PicADSBMultiplexer:
                 self._last_data_time = time.time()
                 self._no_data_logged = False
 
-                try:
-                    byte = self.ser.read()
-                    self.stats['bytes_received'] += 1
-                except serial.SerialException as e:
-                    self.logger.error(f"Serial read error: {e}")
-                    if not self._reconnect():
-                        self.running = False
-                    return
+                # Читаем все доступные данные
+                data = self.ser.read(self.ser.in_waiting)
+                self.stats['bytes_received'] += len(data)
 
-                if byte == b'#':
-                    if self._buffer:
-                        self.logger.debug(f"Discarding buffer: {self._buffer!r}")
-                    self._buffer = byte
-                    self._sync_state = True
-                    return
+                # Отладочный вывод
+                self.logger.debug(f"Received raw data: {data!r}")
 
-                if self._buffer.startswith(b'#'):
-                    self._buffer += byte
-                    if byte == b'\n' or len(self._buffer) > self.MAX_MESSAGE_LENGTH:
-                        self._buffer = b''
-                        self._sync_state = False
-                    return
-
-                try:
-                    self.message_queue.put_nowait(byte)
-                    self.stats['bytes_processed'] += 1
-                except queue.Full:
-                    self.logger.warning("Queue full, dropping data")
-                    self.stats['messages_dropped'] += 1
-
+                for byte in data:
+                    if byte in b'#*@.':  # Начало сообщения
+                        if self._buffer:
+                            self.logger.debug(f"Discarding buffer: {self._buffer!r}")
+                        self._buffer = bytes([byte])
+                        self._sync_state = True
+                    elif byte in b'\r\n':  # Конец строки
+                        if self._buffer:
+                            if self.validate_message(self._buffer):
+                                try:
+                                    self.message_queue.put_nowait(self._buffer + b'\n')
+                                    self.stats['messages_processed'] += 1
+                                    self.logger.debug(f"Message queued: {self._buffer!r}")
+                                except queue.Full:
+                                    self.logger.warning("Queue full, dropping message")
+                                    self.stats['messages_dropped'] += 1
+                            self._buffer = b''
+                    else:
+                        if self._sync_state:
+                            self._buffer += bytes([byte])
+                            if len(self._buffer) > self.MAX_MESSAGE_LENGTH:
+                                self.logger.warning(f"Buffer overflow: {self._buffer!r}")
+                                self._buffer = b''
+                                self._sync_state = False
             else:
                 time.sleep(0.001)
 
