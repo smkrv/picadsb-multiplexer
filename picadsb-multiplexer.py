@@ -278,7 +278,7 @@ class PicADSBMultiplexer:
             self.logger.debug(f"Sending {desc}: {cmd.hex()}")
             formatted_cmd = self.format_command(cmd)
             self.ser.write(formatted_cmd)
-            time.sleep(0.1)
+            time.sleep(1.7)
 
             response = self._read_response()
             if response:
