@@ -6,10 +6,12 @@ services:
     devices:
       - /dev/ttyACM0:/dev/ttyACM0
     ports:
-      - "30002:30002"
+      - "31002:31002"
     environment:
-      - ADSB_TCP_PORT=30002
+      - ADSB_TCP_PORT=31002
       - ADSB_DEVICE=/dev/ttyACM0
       - ADSB_LOG_LEVEL=INFO
+      - ADSB_REMOTE_HOST=127.0.0.1
+      - ADSB_REMOTE_PORT=30002
     volumes:
       - ./logs:/app/logs
