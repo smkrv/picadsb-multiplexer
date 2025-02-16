@@ -42,14 +42,15 @@ class PicADSBMultiplexer:
     """Main multiplexer class that handles device communication and client connections."""
 
     # Constants
-    KEEPALIVE_MARKER = b'\x00'
     KEEPALIVE_INTERVAL = 30
     SERIAL_BUFFER_SIZE = 131072
-    MAX_MESSAGE_LENGTH = 50
-    NO_DATA_TIMEOUT = 60  # seconds
-    VERSION_CHECK_TIMEOUT = 60  # seconds
+    MAX_MESSAGE_LENGTH = 256
+    NO_DATA_TIMEOUT = 30
+    VERSION_CHECK_TIMEOUT = 30
     MAX_RECONNECT_ATTEMPTS = 3
-    RECONNECT_DELAY = 5  # seconds
+    RECONNECT_DELAY = 2
+    SYNC_CHECK_INTERVAL = 1
+    RESET_TIMEOUT = 5
 
     def _setup_logging(self, log_level: str):
         """Configure logging with both file and console output."""
@@ -158,7 +159,7 @@ class PicADSBMultiplexer:
                 bytesize=serial.EIGHTBITS,
                 parity=serial.PARITY_NONE,
                 stopbits=serial.STOPBITS_ONE,
-                timeout=1,
+                timeout=0.1,
                 xonxoff=False,
                 rtscts=False,
                 dsrdtr=False
@@ -178,8 +179,16 @@ class PicADSBMultiplexer:
             time.sleep(0.25)
 
             if not self.skip_init:
-                if not self._initialize_device():
-                    raise Exception("Device initialization failed")
+                retry_count = 3
+                while retry_count > 0:
+                    if self._initialize_device():
+                        break
+                    retry_count -= 1
+                    time.sleep(1)
+                    self.logger.warning(f"Retrying initialization, attempts left: {retry_count}")
+
+                if retry_count == 0:
+                    raise Exception("Device initialization failed after all retries")
             else:
                 self.logger.info("Skipping device initialization (--no-init mode)")
                 self._check_device_version()
@@ -219,6 +228,36 @@ class PicADSBMultiplexer:
 
         return None
 
+    def _reset_device(self):
+        """Reset device to recover from errors."""
+        try:
+            self.logger.info("Performing device reset")
+
+            # Сброс линий управления
+            self.ser.setDTR(False)
+            self.ser.setRTS(False)
+            time.sleep(0.25)
+            self.ser.setDTR(True)
+            self.ser.setRTS(True)
+            time.sleep(0.25)
+
+            # Очистка буферов
+            self.ser.reset_input_buffer()
+            self.ser.reset_output_buffer()
+            self._buffer = b''
+
+            # Реинициализация
+            if not self._initialize_device():
+                raise Exception("Device reset failed")
+
+            self._sync_state = True
+            self._last_sync_time = time.time()
+            self.logger.info("Device reset completed successfully")
+
+        except Exception as e:
+            self.logger.error(f"Error during device reset: {e}")
+            raise
+
     def _initialize_device(self) -> bool:
         """Initialize device with specific command sequence."""
         commands = [
@@ -230,8 +269,9 @@ class PicADSBMultiplexer:
             (b'\x43\x00', "Status check 2"),
             (b'\x51\x00\x00', "Reset mode"),
             (b'\x37\x03', "Set filter"),
-            (b'\x43\x00', "Final status check"),
-            (b'\x38', "Start reception")
+            (b'\x43\x00', "Status check 3"),
+            (b'\x38', "Start reception"),
+            (b'\x43\x02', "Final status check"),
         ]
 
         for cmd, desc in commands:
@@ -266,13 +306,20 @@ class PicADSBMultiplexer:
             resp_bytes = [int(x, 16) for x in response[1:].decode().strip('-').split('-')]
 
             if cmd[0] == 0x00:  # Version command
-                return resp_bytes[0] == 0x00 and resp_bytes[2] == 0x05
-            elif cmd[0] == 0x43:  # Mode set command
-                return resp_bytes[0] == 0x43 and resp_bytes[1] == cmd[1]
+                return (resp_bytes[0] == 0x00 and
+                       resp_bytes[2] == 0x05 and
+                       resp_bytes[3] == 0x04)
+            elif cmd[0] == 0x43:  # Mode commands
+                return (resp_bytes[0] == 0x43 and
+                       resp_bytes[1] == cmd[1] and
+                       all(x == 0 for x in resp_bytes[2:]))
             elif cmd[0] == 0x37:  # Filter command
-                return resp_bytes[0] == 0x37 and resp_bytes[1] == cmd[1]
+                return (resp_bytes[0] == 0x37 and
+                       resp_bytes[1] == 0x03)
             elif cmd[0] == 0x38:  # Start command
-                return resp_bytes[0] == 0x38 and resp_bytes[2] == 0x01
+                return (resp_bytes[0] == 0x38 and
+                       resp_bytes[2] == 0x01 and
+                       resp_bytes[3] == 0x64)
 
             return True
         except Exception as e:
@@ -310,16 +357,18 @@ class PicADSBMultiplexer:
                 if byte in [b'\r', b'\n']:
                     return
 
-                if byte in [b'#', b'*']:
-                    if self._buffer:
+                # Updated message start detection
+                if byte in [b'#', b'*', b'@', b'.']:
+                    if self._buffer and len(self._buffer) > 1:
                         self.logger.debug(f"Discarding incomplete buffer: {self._buffer!r}")
                         self.stats['sync_losses'] += 1
                     self._buffer = byte
                     self._sync_state = True
-                elif byte == b';':
+                    return
+
+                # Handle message end
+                if byte in [b';', b'\r', b'\n']:
                     if not self._sync_state:
-                        self.logger.debug("Message received while out of sync")
-                        self._buffer = b''
                         return
 
                     self._buffer += byte
@@ -327,10 +376,7 @@ class PicADSBMultiplexer:
                         if self.validate_message(self._buffer):
                             try:
                                 clean_msg = self._buffer.rstrip(b'\r\n;')
-                                if clean_msg.startswith(b'#'):
-                                    clean_msg = b'*' + clean_msg[1:]
                                 formatted_msg = clean_msg + b';\n'
-
                                 self.message_queue.put_nowait(formatted_msg)
                                 self.stats['messages_processed'] += 1
                                 self.logger.debug(f"Message queued: {formatted_msg!r}")
@@ -338,22 +384,26 @@ class PicADSBMultiplexer:
                                 self.logger.warning("Message queue full, dropping message")
                                 self.stats['messages_dropped'] += 1
                     self._buffer = b''
-                else:
-                    if not self._sync_state:
-                        return
-                    self._buffer += byte
-                    if len(self._buffer) > self.MAX_MESSAGE_LENGTH:
-                        self.logger.warning(f"Buffer overflow, discarding: {self._buffer!r}")
-                        self.stats['buffer_overflows'] += 1
-                        self._buffer = b''
-                        self._sync_state = False
+                    return
+
+                # Accumulate message data
+                if not self._sync_state:
+                    return
+
+                self._buffer += byte
+                if len(self._buffer) > self.MAX_MESSAGE_LENGTH:
+                    self.logger.warning(f"Buffer overflow, discarding: {self._buffer!r}")
+                    self.stats['buffer_overflows'] += 1
+                    self._buffer = b''
+                    self._sync_state = False
 
             else:
-                time.sleep(0.01)
+                time.sleep(0.001)  # Reduced sleep time
 
         except Exception as e:
             self.logger.error(f"Error in serial processing: {e}")
             self.stats['errors'] += 1
+
 
     def _check_device_status(self):
         """Check device status if no data received for a while."""
@@ -392,15 +442,17 @@ class PicADSBMultiplexer:
 
                 self._init_serial()
 
-                self.ser.write(self.format_command(b'\x00'))
-                response = self._read_response()
-
-                if response and self.verify_response(b'\x00', response):
-                    self.logger.info("Successfully reconnected to device")
-                    self.stats['reconnects'] += 1
-                    self._last_data_time = time.time()
-                    self._no_data_logged = False
-                    return True
+                for _ in range(3):
+                    self.ser.write(self.format_command(b'\x00'))
+                    response = self._read_response()
+                    if response and self.verify_response(b'\x00', response):
+                        self.logger.info("Successfully reconnected to device")
+                        self.stats['reconnects'] += 1
+                        self._last_data_time = time.time()
+                        self._no_data_logged = False
+                        self._sync_state = True
+                        return True
+                    time.sleep(0.1)
 
             except Exception as e:
                 self.logger.error(f"Reconnection attempt {attempt + 1} failed: {e}")
@@ -410,6 +462,23 @@ class PicADSBMultiplexer:
 
         self.logger.error(f"Failed to reconnect after {self.MAX_RECONNECT_ATTEMPTS} attempts")
         return False
+
+    def _check_sync_state(self):
+        """Check and maintain synchronization state."""
+        current_time = time.time()
+
+        if not self._sync_state:
+            if current_time - self._last_sync_time > 5:
+                self.logger.warning("Long period without synchronization, resetting device")
+                self._reset_device()
+                return
+
+            if current_time - self._last_sync_time > 1:
+                self.ser.reset_input_buffer()
+                self._buffer = b''
+                self.logger.debug("Resetting input buffer due to sync loss")
+
+        self._last_sync_time = current_time
 
     def _update_stats(self):
         """Update and log periodic statistics."""
@@ -477,11 +546,44 @@ class PicADSBMultiplexer:
             if data == self.KEEPALIVE_MARKER:
                 self.client_last_active[client] = time.time()
                 self.logger.debug(f"Received keepalive from {client.getpeername()}")
-            else:
+                return
+
+            try:
+                cmd = data.decode().strip()
+                if cmd.startswith('VERSION'):
+                    self._send_version_to_client(client)
+                elif cmd.startswith('STATS'):
+                    self._send_stats_to_client(client)
+                else:
+                    self.logger.debug(f"Received unknown command from client: {cmd}")
+            except:
                 self.logger.debug(f"Received data from client: {data!r}")
 
         except Exception as e:
             self.logger.debug(f"Error handling client data: {e}")
+            self._remove_client(client)
+
+    def _send_version_to_client(self, client: socket.socket):
+        """Send version information to client."""
+        try:
+            version_info = f"PicADSB Multiplexer v1.0\n"
+            client.send(version_info.encode())
+        except Exception as e:
+            self.logger.error(f"Error sending version to client: {e}")
+            self._remove_client(client)
+
+    def _send_stats_to_client(self, client: socket.socket):
+        """Send statistics to client."""
+        try:
+            stats = (
+                f"Messages processed: {self.stats['messages_processed']}\n"
+                f"Messages/minute: {self.stats['messages_per_minute']}\n"
+                f"Errors: {self.stats['errors']}\n"
+                f"Connected clients: {self.stats['clients_current']}\n"
+            )
+            client.send(stats.encode())
+        except Exception as e:
+            self.logger.error(f"Error sending stats to client: {e}")
             self._remove_client(client)
 
     def _broadcast_message(self, message: bytes):
@@ -535,21 +637,28 @@ class PicADSBMultiplexer:
             if len(message) < 3:
                 return False
 
-            if not message.startswith((b'*', b'#')):
+            if not message.startswith((b'*', b'#', b'@', b'.')):
                 return False
 
-            if not message.endswith(b';'):
+            if not message.rstrip(b'\r\n').endswith(b';'):
                 return False
 
-            valid_chars = set(b'0123456789ABCDEF*#;')
-            if not all(b in valid_chars for b in message[1:-1]):
-                return False
+            msg_body = message[1:-1].rstrip(b'\r\n;')
 
-            return True
+            if message.startswith(b'#'):
+                valid_chars = set(b'0123456789ABCDEF-')
+                return all(b in valid_chars for b in msg_body)
+
+            elif message.startswith((b'*', b'@', b'.')):
+                valid_chars = set(b'0123456789ABCDEF')
+                return all(b in valid_chars for b in msg_body)
+
+            return False
 
         except Exception as e:
             self.logger.error(f"Message validation error: {e}")
             return False
+
 
     def _signal_handler(self, signum, frame):
         """Handle shutdown signals."""
@@ -559,53 +668,51 @@ class PicADSBMultiplexer:
     def run(self):
         """Main operation loop."""
         self.logger.info("Starting multiplexer...")
+        last_sync_check = time.time()
+
         try:
             while self.running:
-                self._process_serial_data()
-
                 try:
-                    readable, _, _ = select.select(
-                        [self.server_socket] + self.clients, [], [], 0.1)
-                    for sock in readable:
-                        if sock is self.server_socket:
-                            self._accept_new_client()
-                        else:
-                            self._handle_client_data(sock)
-                except select.error:
-                    pass
+                    self._process_serial_data()
 
-                while not self.message_queue.empty():
-                    message = self.message_queue.get_nowait()
-                    self._broadcast_message(message)
+                    try:
+                        readable, _, _ = select.select(
+                            [self.server_socket] + self.clients, [], [], 0.1)
+                        for sock in readable:
+                            if sock is self.server_socket:
+                                self._accept_new_client()
+                            else:
+                                self._handle_client_data(sock)
+                    except select.error:
+                        pass
 
-                self._update_stats()
-                self._check_timeouts()
+                    while not self.message_queue.empty():
+                        try:
+                            message = self.message_queue.get_nowait()
+                            self._broadcast_message(message)
+                        except queue.Empty:
+                            break
+
+                    current_time = time.time()
+
+                    if current_time - last_sync_check >= self.SYNC_CHECK_INTERVAL:
+                        self._check_sync_state()
+                        last_sync_check = current_time
+
+                    self._update_stats()
+                    self._check_timeouts()
+
+                except Exception as e:
+                    self.logger.error(f"Error in main loop iteration: {e}")
+                    self.stats['errors'] += 1
+                    time.sleep(0.1)
 
         except KeyboardInterrupt:
             self.logger.info("Keyboard interrupt received")
         except Exception as e:
-            self.logger.error(f"Error in main loop: {e}")
+            self.logger.error(f"Fatal error in main loop: {e}")
         finally:
             self.cleanup()
-
-    def cleanup(self):
-        """Clean up resources on shutdown."""
-        self.logger.info("Cleaning up...")
-        for client in self.clients[:]:
-            self._remove_client(client)
-
-        try:
-            self.server_socket.close()
-        except:
-            pass
-
-        try:
-            if hasattr(self, 'ser') and self.ser.is_open:
-                self.ser.close()
-        except:
-            pass
-
-        self.logger.info("Cleanup complete")
 
 if __name__ == '__main__':
     import argparse
