@@ -2,7 +2,7 @@
 """
 ADS-B Multiplexer for MicroADSB / adsbPIC by Sprut devices.
 
-@license: CC BY-NC-SA 4.0 International
+@license: CC BY-NC-SA 4.0 International   
 @author: SMKRV
 @github: https://github.com/smkrv/picadsb-multiplexer
 @source: https://github.com/smkrv/picadsb-multiplexer
