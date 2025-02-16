@@ -233,7 +233,6 @@ class PicADSBMultiplexer:
         try:
             self.logger.info("Performing device reset")
 
-            # Сброс линий управления
             self.ser.setDTR(False)
             self.ser.setRTS(False)
             time.sleep(0.25)
@@ -241,12 +240,10 @@ class PicADSBMultiplexer:
             self.ser.setRTS(True)
             time.sleep(0.25)
 
-            # Очистка буферов
             self.ser.reset_input_buffer()
             self.ser.reset_output_buffer()
             self._buffer = b''
 
-            # Реинициализация
             if not self._initialize_device():
                 raise Exception("Device reset failed")
 
@@ -261,25 +258,23 @@ class PicADSBMultiplexer:
     def _initialize_device(self) -> bool:
         """Initialize device with specific command sequence."""
         commands = [
-            (b'\x00', "Version request"),
+            (b'\x00', "Version check"),
             (b'\x43\x00', "Stop reception"),
-            (b'\x44\x64', "Set UREF offset 100mV"),
             (b'\x51\x01\x00', "Set mode"),
             (b'\x37\x03', "Set filter"),
-            (b'\x43\x00', "Status check 1"),
+            (b'\x43\x02', "Status check 1"),
             (b'\x43\x00', "Status check 2"),
             (b'\x51\x00\x00', "Reset mode"),
-            (b'\x37\x03', "Set filter"),
-            (b'\x43\x00', "Status check 3"),
-            (b'\x38', "Start reception"),
-            (b'\x43\x02', "Final status check"),
+            (b'\x37\x03', "Set filter again"),
+            (b'\x43\x02', "Status check 3"),
+            (b'\x38', "Start reception")
         ]
 
         for cmd, desc in commands:
             self.logger.debug(f"Sending {desc}: {cmd.hex()}")
             formatted_cmd = self.format_command(cmd)
             self.ser.write(formatted_cmd)
-            time.sleep(1.7)
+            time.sleep(0.5)
 
             response = self._read_response()
             if response:
@@ -346,42 +341,31 @@ class PicADSBMultiplexer:
                 return
 
             if self.ser.in_waiting:
-                self._last_data_time = time.time()
-                self._no_data_logged = False
-
-                # Читаем все доступные данные
                 data = self.ser.read(self.ser.in_waiting)
                 self.stats['bytes_received'] += len(data)
 
-                # Отладочный вывод
-                self.logger.debug(f"Received raw data: {data!r}")
-
                 for byte in data:
-                    if byte in b'#*@.':  # Начало сообщения
+                    if byte in b'*#@':
                         if self._buffer:
                             self.logger.debug(f"Discarding buffer: {self._buffer!r}")
                         self._buffer = bytes([byte])
                         self._sync_state = True
-                    elif byte in b'\r\n':  # Конец строки
+                    elif byte in b'\r\n;':
                         if self._buffer:
                             if self.validate_message(self._buffer):
                                 try:
                                     self.message_queue.put_nowait(self._buffer + b'\n')
                                     self.stats['messages_processed'] += 1
-                                    self.logger.debug(f"Message queued: {self._buffer!r}")
                                 except queue.Full:
-                                    self.logger.warning("Queue full, dropping message")
                                     self.stats['messages_dropped'] += 1
                             self._buffer = b''
                     else:
                         if self._sync_state:
                             self._buffer += bytes([byte])
                             if len(self._buffer) > self.MAX_MESSAGE_LENGTH:
-                                self.logger.warning(f"Buffer overflow: {self._buffer!r}")
                                 self._buffer = b''
                                 self._sync_state = False
-            else:
-                time.sleep(0.001)
+                                self.stats['buffer_overflows'] += 1
 
         except Exception as e:
             self.logger.error(f"Error in serial processing: {e}")
@@ -451,7 +435,7 @@ class PicADSBMultiplexer:
 
         if not self._sync_state:
             if current_time - self._last_sync_time > 5:
-                self.logger.warning("Long period without synchronization, resetting device")
+                self.logger.warning("Lost synchronization, attempting reset")
                 self._reset_device()
                 return
 
@@ -619,13 +603,15 @@ class PicADSBMultiplexer:
             if len(message) < 3:
                 return False
 
-            if message.startswith(b'#'):
-                return False
-
-            if not message.startswith((b'*', b'@', b'.')):
+            if not message.startswith((b'*', b'#', b'@')):
                 return False
 
             if not message.rstrip(b'\r\n').endswith(b';'):
+                return False
+
+            content = message[1:-1]
+            valid_chars = set(b'0123456789ABCDEF-')
+            if not all(b in valid_chars for b in content):
                 return False
 
             return True
