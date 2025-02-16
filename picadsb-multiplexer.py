@@ -46,8 +46,8 @@ class PicADSBMultiplexer:
     KEEPALIVE_INTERVAL = 30
     SERIAL_BUFFER_SIZE = 131072
     MAX_MESSAGE_LENGTH = 256
-    NO_DATA_TIMEOUT = 30
-    VERSION_CHECK_TIMEOUT = 30
+    NO_DATA_TIMEOUT = 600
+    MODE_CHECK_TIMEOUT = 30
     MAX_RECONNECT_ATTEMPTS = 999
     RECONNECT_DELAY = 10
     SYNC_CHECK_INTERVAL = 1
@@ -129,8 +129,8 @@ class PicADSBMultiplexer:
         }
 
         # Timing controls
-        self.last_version_check = time.time()
-        self.version_check_interval = 300
+        self.last_mode_check = time.time()
+        self.mode_check_interval = 300
         self.last_stats_update = time.time()
         self.stats_interval = 60
 
@@ -235,7 +235,7 @@ class PicADSBMultiplexer:
                     raise Exception("Device initialization failed after all retries")
             else:
                 self.logger.info("Skipping device initialization (--no-init mode)")
-                self._check_device_version()
+                self._check_device_mode()
 
             self.logger.info(f"Serial port {self.serial_port} initialized successfully")
 
@@ -363,12 +363,12 @@ class PicADSBMultiplexer:
             self.logger.error(f"Error verifying response: {e}")
             return False
 
-    def _check_device_version(self):
-        """Check device version."""
-        self.ser.write(self.format_command(b'\x00'))
+    def _check_device_mode(self):
+        """Check device."""
+        self.ser.write(self.format_command(b'\x43\x02'))
         response = self._read_response()
-        if not response or not self.verify_response(b'\x00', response):
-            raise Exception("Device version check failed")
+        if not response or not self.verify_response(b'\x43\x02', response):
+            raise Exception("Device check failed")
         return True
 
     def _process_serial_data(self):
