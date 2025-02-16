@@ -456,11 +456,11 @@ class PicADSBMultiplexer:
                 self.logger.warning(f"No data received for {self.NO_DATA_TIMEOUT} seconds, checking device...")
                 self._no_data_logged = True
 
-            self.ser.write(self.format_command(b'\x00'))
+            self.ser.write(self.format_command(b'\x43\x02'))
             response = self._read_response()
 
-            if not response or not self.verify_response(b'\x00', response):
-                self.logger.error("Device not responding to version check")
+            if not response or not self.verify_response(b'\x43\x02', response):
+                self.logger.error("Device not responding to mode check")
                 if not self._reconnect():
                     self.logger.error("Failed to reconnect to device")
                     self.running = False
