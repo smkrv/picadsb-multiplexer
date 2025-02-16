@@ -354,44 +354,26 @@ class PicADSBMultiplexer:
                         self.running = False
                     return
 
-                if byte in [b'\r', b'\n']:
-                    return
-
-                if byte in [b'#', b'*', b'@', b'.']:
+                if byte == b'#':
                     if self._buffer:
-                        self.logger.debug(f"Discarding incomplete buffer: {self._buffer!r}")
-                        self.stats['sync_losses'] += 1
+                        self.logger.debug(f"Discarding buffer: {self._buffer!r}")
                     self._buffer = byte
                     self._sync_state = True
                     return
 
-                if byte == b';':
-                    if not self._sync_state:
-                        return
-
+                if self._buffer.startswith(b'#'):
                     self._buffer += byte
-                    if len(self._buffer) > 2:
-                        if not self._buffer.startswith(b'#'):
-                            try:
-                                formatted_msg = self._buffer + b'\n'
-                                self.message_queue.put_nowait(formatted_msg)
-                                self.stats['messages_processed'] += 1
-                                self.logger.debug(f"Message queued: {formatted_msg!r}")
-                            except queue.Full:
-                                self.logger.warning("Message queue full, dropping message")
-                                self.stats['messages_dropped'] += 1
-                    self._buffer = b''
+                    if byte == b'\n' or len(self._buffer) > self.MAX_MESSAGE_LENGTH:
+                        self._buffer = b''
+                        self._sync_state = False
                     return
 
-                if not self._sync_state:
-                    return
-
-                self._buffer += byte
-                if len(self._buffer) > self.MAX_MESSAGE_LENGTH:
-                    self.logger.warning(f"Buffer overflow, discarding: {self._buffer!r}")
-                    self.stats['buffer_overflows'] += 1
-                    self._buffer = b''
-                    self._sync_state = False
+                try:
+                    self.message_queue.put_nowait(byte)
+                    self.stats['bytes_processed'] += 1
+                except queue.Full:
+                    self.logger.warning("Queue full, dropping data")
+                    self.stats['messages_dropped'] += 1
 
             else:
                 time.sleep(0.001)
@@ -399,7 +381,6 @@ class PicADSBMultiplexer:
         except Exception as e:
             self.logger.error(f"Error in serial processing: {e}")
             self.stats['errors'] += 1
-
 
     def _check_device_status(self):
         """Check device status if no data received for a while."""
@@ -582,12 +563,12 @@ class PicADSBMultiplexer:
             self.logger.error(f"Error sending stats to client: {e}")
             self._remove_client(client)
 
-    def _broadcast_message(self, message: bytes):
-        """Broadcast message to all connected clients."""
+    def _broadcast_message(self, data: bytes):
+        """Broadcast data to all connected clients."""
         disconnected_clients = []
         for client in self.clients:
             try:
-                sent = client.send(message)
+                sent = client.send(data)
                 if sent == 0:
                     raise BrokenPipeError("Connection lost")
                 self.client_last_active[client] = time.time()
