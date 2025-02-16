@@ -11,7 +11,7 @@ services:
       - ADSB_TCP_PORT=31002
       - ADSB_DEVICE=/dev/ttyACM0
       - ADSB_LOG_LEVEL=INFO
-      - ADSB_REMOTE_HOST=127.0.0.1
-      - ADSB_REMOTE_PORT=30002
+      - ADSB_REMOTE_HOST= # Indicate if required
+      - ADSB_REMOTE_PORT= # Indicate if required
     volumes:
       - ./logs:/app/logs

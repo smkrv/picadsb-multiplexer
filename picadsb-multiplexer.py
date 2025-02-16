@@ -2,7 +2,7 @@
 """
 ADS-B Multiplexer for MicroADSB / adsbPIC by Sprut devices.
 
-@license: CC BY-NC-SA 4.0 International   
+@license: CC BY-NC-SA 4.0 International
 @author: SMKRV
 @github: https://github.com/smkrv/picadsb-multiplexer
 @source: https://github.com/smkrv/picadsb-multiplexer
@@ -48,8 +48,8 @@ class PicADSBMultiplexer:
     MAX_MESSAGE_LENGTH = 256
     NO_DATA_TIMEOUT = 30
     VERSION_CHECK_TIMEOUT = 30
-    MAX_RECONNECT_ATTEMPTS = 3
-    RECONNECT_DELAY = 2
+    MAX_RECONNECT_ATTEMPTS = 999
+    RECONNECT_DELAY = 10
     SYNC_CHECK_INTERVAL = 1
     RESET_TIMEOUT = 5
     KEEPALIVE_MARKER = b'\n'
