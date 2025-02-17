@@ -133,6 +133,8 @@ class PicADSBMultiplexer:
         self.mode_check_interval = 300
         self.last_stats_update = time.time()
         self.stats_interval = 60
+        self.last_remote_check = time.time()
+        self.remote_check_interval = 60  # Check remote connection every 60 seconds
 
         # Message handling
         self.message_queue = queue.Queue(maxsize=5000)
@@ -192,6 +194,29 @@ class PicADSBMultiplexer:
             self.remote_socket = None
             # Try to reconnect
             self._connect_to_remote()
+
+    def _check_remote_connection(self):
+        """
+        Check remote connection status and attempt to reconnect if needed.
+        This check runs every minute to ensure stable remote connection.
+        """
+        current_time = time.time()
+
+        if self.remote_host and self.remote_port:
+            if current_time - self.last_remote_check >= self.remote_check_interval:
+                self.last_remote_check = current_time
+
+                if not self.remote_socket:
+                    self.logger.info("Remote connection check: attempting to reconnect...")
+                    self._connect_to_remote()
+                else:
+                    # Test connection by sending keepalive
+                    try:
+                        self.remote_socket.send(b'\n')
+                    except Exception as e:
+                        self.logger.warning(f"Remote connection test failed: {e}")
+                        self.remote_socket = None
+                        self._connect_to_remote()
 
     def _init_serial(self):
         """Initialize serial port with device configuration."""
@@ -739,6 +764,14 @@ class PicADSBMultiplexer:
             while self.running:
                 try:
                     self._process_serial_data()
+
+                    # Check and maintain remote connection
+                    self._check_remote_connection()
+
+                    # Add remote_socket to read list if it exists
+                    sockets_to_read = [self.server_socket] + self.clients
+                    if self.remote_socket:
+                        sockets_to_read.append(self.remote_socket)
 
                     # Add remote_socket to read list if it exists
                     sockets_to_read = [self.server_socket] + self.clients
