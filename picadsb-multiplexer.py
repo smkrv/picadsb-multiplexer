@@ -210,25 +210,25 @@ class PicADSBMultiplexer:
     def _check_remote_connection(self):
         """
         Check remote connection status and attempt to reconnect if needed.
-        This check runs every minute to ensure stable remote connection.
+        This check runs every 15 seconds to ensure stable remote connection.
         """
         current_time = time.time()
 
         if self.remote_host and self.remote_port:
-            if current_time - self.last_remote_check >= self.remote_check_interval:
+            if current_time - self.last_remote_check >= 60:
                 self.last_remote_check = current_time
 
                 if not self.remote_socket:
                     self.logger.info("Remote connection check: attempting to reconnect...")
                     self._connect_to_remote()
                 else:
-                    # Test connection by sending keepalive
+                    # Проверяем соединение отправкой keepalive
                     try:
                         self.remote_socket.send(b'\n')
                     except Exception as e:
                         self.logger.warning(f"Remote connection test failed: {e}")
                         self.remote_socket = None
-                        self._connect_to_remote()
+
 
     def _init_serial(self):
         """Initialize serial port with device configuration."""
@@ -710,19 +710,37 @@ class PicADSBMultiplexer:
     def _convert_to_beast(self, message: bytes) -> Optional[bytes]:
         """Convert raw message to Beast format."""
         try:
-            # Remove start/end markers
+            # Remove start/end markers and any whitespace/newlines
             if message.startswith(b'*'):
-                data = message[1:-1]  # Remove * and ;
+                # Remove * and ; and any whitespace/newlines
+                data = message[1:].rstrip(b';\n\r').strip()
 
                 # Convert hex string to bytes
-                raw_data = bytes.fromhex(data.decode())
+                try:
+                    raw_data = bytes.fromhex(data.decode())
 
-                # Determine message type and length
-                if len(raw_data) == BeastFormat.MODES_SHORT_LEN:
-                    return self._create_beast_message(BeastFormat.TYPE_MODES_SHORT, raw_data)
-                elif len(raw_data) == BeastFormat.MODES_LONG_LEN:
-                    return self._create_beast_message(BeastFormat.TYPE_MODES_LONG, raw_data)
+                    # Determine message type and length
+                    msg_len = len(raw_data)
 
+                    if msg_len == BeastFormat.MODES_SHORT_LEN:
+                        return self._create_beast_message(BeastFormat.TYPE_MODES_SHORT, raw_data)
+                    elif msg_len == BeastFormat.MODES_LONG_LEN:
+                        return self._create_beast_message(BeastFormat.TYPE_MODES_LONG, raw_data)
+                    else:
+                        self.logger.debug(f"Unsupported message length: {msg_len}")
+                        return None
+
+                except ValueError as ve:
+                    self.logger.debug(f"Invalid hex data in message: {data!r}")
+                    self.logger.debug(f"Raw message: {message!r}")
+                    self.logger.debug(f"Stripped data: {data!r}")
+                    self.logger.debug(f"Hex conversion result: {raw_data.hex()}")
+                    return None
+
+            return None
+
+        except Exception as e:
+            self.logger.error(f"Error converting to Beast format: {e}")
             return None
 
         except Exception as e:
@@ -754,7 +772,10 @@ class PicADSBMultiplexer:
         """Broadcast data to all connected clients in Beast format."""
         beast_msg = self._convert_to_beast(data)
         if not beast_msg:
+            self.logger.debug(f"Failed to convert message to Beast format: {data!r}")
             return
+
+        self.logger.debug(f"Broadcasting Beast message: {beast_msg.hex()}")
 
         disconnected_clients = []
         for client in self.clients:
