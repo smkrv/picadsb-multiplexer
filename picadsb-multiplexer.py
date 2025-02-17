@@ -39,6 +39,18 @@ import signal
 from datetime import datetime
 from typing import Optional, Dict, Any, List, Tuple
 
+class BeastFormat:
+    """Constants for Beast binary format."""
+    ESCAPE = 0x1a
+    TYPE_MODEA = 0x31  # '1'
+    TYPE_MODES_SHORT = 0x32  # '2'
+    TYPE_MODES_LONG = 0x33  # '3'
+
+    MODES_SHORT_LEN = 7
+    MODES_LONG_LEN = 14
+    MODEA_LEN = 2
+    TIMESTAMP_LEN = 6
+
 class PicADSBMultiplexer:
     """Main multiplexer class that handles device communication and client connections."""
 
@@ -669,12 +681,85 @@ class PicADSBMultiplexer:
             self.logger.error(f"Error sending stats to client: {e}")
             self._remove_client(client)
 
+    def _encode_beast_timestamp(self) -> bytes:
+        """Generate 6-byte MLAT timestamp."""
+        timestamp = int(time.time() * 1e6)  # microseconds
+        return timestamp.to_bytes(6, byteorder='big')
+
+    def _escape_beast_bytes(self, data: bytes) -> bytes:
+        """Escape 0x1a bytes in data."""
+        result = bytearray()
+        for byte in data:
+            if byte == BeastFormat.ESCAPE:
+                result.extend([BeastFormat.ESCAPE, BeastFormat.ESCAPE])
+            else:
+                result.append(byte)
+        return bytes(result)
+
+    def _create_beast_message(self, msg_type: int, data: bytes) -> bytes:
+        """Create Beast format message with escaping."""
+        timestamp = self._encode_beast_timestamp()
+        escaped_data = self._escape_beast_bytes(data)
+
+        message = bytearray([BeastFormat.ESCAPE, msg_type])
+        message.extend(timestamp)
+        message.extend(escaped_data)
+
+        return bytes(message)
+
+    def _convert_to_beast(self, message: bytes) -> Optional[bytes]:
+        """Convert raw message to Beast format."""
+        try:
+            # Remove start/end markers
+            if message.startswith(b'*'):
+                data = message[1:-1]  # Remove * and ;
+
+                # Convert hex string to bytes
+                raw_data = bytes.fromhex(data.decode())
+
+                # Determine message type and length
+                if len(raw_data) == BeastFormat.MODES_SHORT_LEN:
+                    return self._create_beast_message(BeastFormat.TYPE_MODES_SHORT, raw_data)
+                elif len(raw_data) == BeastFormat.MODES_LONG_LEN:
+                    return self._create_beast_message(BeastFormat.TYPE_MODES_LONG, raw_data)
+
+            return None
+
+        except Exception as e:
+            self.logger.error(f"Error converting to Beast format: {e}")
+            return None
+
+    def _validate_beast_message(self, message: bytes) -> bool:
+        """Validate Beast format message."""
+        try:
+            if len(message) < 8:  # Minimum length: escape + type + timestamp
+                return False
+
+            if message[0] != BeastFormat.ESCAPE:
+                return False
+
+            msg_type = message[1]
+            if msg_type not in (BeastFormat.TYPE_MODEA,
+                              BeastFormat.TYPE_MODES_SHORT,
+                              BeastFormat.TYPE_MODES_LONG):
+                return False
+
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Beast message validation error: {e}")
+            return False
+
     def _broadcast_message(self, data: bytes):
-        """Broadcast data to all connected clients."""
+        """Broadcast data to all connected clients in Beast format."""
+        beast_msg = self._convert_to_beast(data)
+        if not beast_msg:
+            return
+
         disconnected_clients = []
         for client in self.clients:
             try:
-                sent = client.send(data)
+                sent = client.send(beast_msg)
                 if sent == 0:
                     raise BrokenPipeError("Connection lost")
                 self.client_last_active[client] = time.time()

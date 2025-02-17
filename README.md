@@ -67,9 +67,9 @@ services:
     devices:
       - /dev/ttyACM0:/dev/ttyACM0
     ports:
-      - "30002:30002"
+      - "31002:31002"
     environment:
-      - ADSB_TCP_PORT=30002
+      - ADSB_TCP_PORT=31002
       - ADSB_DEVICE=/dev/ttyACM0
       - ADSB_LOG_LEVEL=INFO
     volumes:
@@ -87,8 +87,8 @@ docker-compose up -d
 docker run -d \
     --name picadsb-multiplexer \
     --serial=/dev/ttyACM0:/dev/ttyACM0 \
-    -p 30002:30002 \
-    -e ADSB_TCP_PORT=30002 \
+    -p 31002:31002 \
+    -e ADSB_TCP_PORT=31002 \
     -e ADSB_DEVICE=/dev/ttyACM0 \
     -e ADSB_LOG_LEVEL=INFO \
     -v $(pwd)/logs:/app/logs \
@@ -101,7 +101,7 @@ docker run -d \
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| ADSB_TCP_PORT | TCP port for client connections | 30002 |
+| ADSB_TCP_PORT | TCP port for client connections | 31002 |
 | ADSB_DEVICE | Path to USB device | /dev/ttyACM0 |
 | ADSB_LOG_LEVEL | Logging level (DEBUG, INFO, WARNING, ERROR) | INFO |
 
@@ -137,13 +137,13 @@ docker run -d \
     --network host \
     antirez/dump1090 \
     --net-only \
-    --net-ri-port 30002
+    --net-ri-port 31002
 ```
 
 ### Using Native Installation
 
 ```bash
-dump1090 --net-only --net-ri-port 30002
+dump1090 --net-only --net-ri-port 31002
 ```
 
 ## Building from Source
@@ -234,7 +234,7 @@ sudo usermod -a -G dialout $USER
 3. Connection refused:
 ```bash
 # Check if port is open
-netstat -tuln | grep 30002
+netstat -tuln | grep 31002
 ```
 
 ### Debug Mode
@@ -264,12 +264,12 @@ python3 adsb_message_parser.py [--host HOST] [--port PORT]
 
 ### Arguments
 - `--host`: Server host address (default: localhost)
-- `--port`: Server port number (default: 30002)
+- `--port`: Server port number (default: 31002)
 
 ### Example Output
 ```
 ADS-B Message Monitor
-Connected to localhost:30002
+Connected to localhost:31002
 
 Timestamp               | Type     | Message                     | Description
 ------------------------------------------------------------------------------------------
@@ -316,21 +316,21 @@ sudo udevadm control --reload-rules
 
 Start the multiplexer:
 ```bash
-python3 picadsb-multiplexer.py --port 30002 --serial /dev/ttyACM0
+python3 picadsb-multiplexer.py --port 31002 --serial /dev/ttyACM0
 ```
 
 #### Testing Reception
 
 Verify data flow using included test client:
 ```bash
-python3 adsb_message_parser.py [--host localhost] [--port 30002]
+python3 adsb_message_parser.py [--host localhost] [--port 31002]
 ```
 
 #### Integration with dump1090
 
 Connect to multiplexer using dump1090:
 ```bash
-dump1090 --net-only --net-ri-port 30002
+dump1090 --net-only --net-ri-port 31002
 ```
 
 #### Running as System Service
@@ -349,7 +349,7 @@ Description=picadsbmultiplexer TCP Bridge
 After=network.target
 
 [Service]
-ExecStart=/usr/bin/python3 /path/to/picadsb-multiplexer.py --port 30002 --serial /dev/ttyACM0
+ExecStart=/usr/bin/python3 /path/to/picadsb-multiplexer.py --port 31002 --serial /dev/ttyACM0
 WorkingDirectory=/path/to/script/directory
 StandardOutput=append:/var/log/picadsbmultiplexer.log
 StandardError=append:/var/log/picadsbmultiplexer.error.log
