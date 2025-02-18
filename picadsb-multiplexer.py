@@ -345,7 +345,7 @@ class PicADSBMultiplexer:
 
         current_time = time.time()
         if hasattr(self, '_last_connect_attempt') and \
-           current_time - self._last_connect_attempt < 60:  # Ждем 60 секунд между попытками
+           current_time - self._last_connect_attempt < 60: 
             return
 
         self._last_connect_attempt = current_time
@@ -369,33 +369,16 @@ class PicADSBMultiplexer:
     def _send_to_remote(self, data: bytes):
         """
         Send data to remote server in Beast format.
-
-        Args:
-            data: Raw message data
         """
         if not self.remote_socket:
             return
 
         try:
-            # Конвертируем в Beast формат, если это еще не Beast
-            if data.startswith(b'*'):
-                beast_msg = self._convert_to_beast(data)
-                if not beast_msg:
-                    return
-            else:
-                beast_msg = data
-
-            # Проверяем валидность Beast сообщения
-            if not self._validate_beast_message(beast_msg):
-                self.logger.debug(f"Invalid Beast message, skipping: {beast_msg.hex()}")
-                return
-
-            # Отправляем данные
-            sent = self.remote_socket.send(beast_msg)
+            sent = self.remote_socket.send(data)
             if sent == 0:
                 raise BrokenPipeError("Zero bytes sent")
 
-            self.logger.debug(f"Sent to remote: {beast_msg.hex()}")
+            self.logger.debug(f"Sent to remote: {data.hex()}")
 
         except Exception as e:
             self.logger.error(f"Error sending to remote server: {e}")
@@ -1126,40 +1109,41 @@ class PicADSBMultiplexer:
 
     def _broadcast_message(self, data: bytes):
         """Broadcast data to all connected clients in Beast format."""
-        if data.startswith(bytes([BeastFormat.ESCAPE])):
-            beast_msg = data
-        else:
-            # Convert message only once
-            beast_msg = self._convert_to_beast(data)
-            if not beast_msg:
-                self.logger.debug(f"Failed to convert message to Beast format: {data!r}")
-                return
+        try:
+            if data.startswith(bytes([BeastFormat.ESCAPE])):
+                beast_msg = data
+            else:
+                beast_msg = self._convert_to_beast(data)
+                if not beast_msg:
+                    self.logger.debug(f"Failed to convert message to Beast format: {data!r}")
+                    return
 
-        self.logger.debug(f"Broadcasting Beast message: {beast_msg.hex()}")
+            self.logger.debug(f"Broadcasting Beast message: {beast_msg.hex()}")
 
-        # Send to clients
-        disconnected_clients = []
-        for client in self.clients:
-            try:
-                sent = client.send(beast_msg)
-                if sent == 0:
-                    raise BrokenPipeError("Connection lost")
-                self.client_last_active[client] = time.time()
-            except Exception as e:
-                self.logger.debug(f"Error sending to client: {e}")
-                disconnected_clients.append(client)
+            disconnected_clients = []
+            for client in self.clients:
+                try:
+                    sent = client.send(beast_msg)
+                    if sent == 0:
+                        raise BrokenPipeError("Connection lost")
+                    self.client_last_active[client] = time.time()
+                except Exception as e:
+                    self.logger.debug(f"Error sending to client: {e}")
+                    disconnected_clients.append(client)
 
-        # Remove disconnected clients
-        for client in disconnected_clients:
-            self._remove_client(client)
+            for client in disconnected_clients:
+                self._remove_client(client)
 
-        # Send to remote server
-        if self.remote_socket:
-            try:
-                self.remote_socket.send(beast_msg)
-            except Exception as e:
-                self.logger.error(f"Error sending to remote server: {e}")
-                self.remote_socket = None
+            if self.remote_socket:
+                try:
+                    self.remote_socket.send(beast_msg)
+                except Exception as e:
+                    self.logger.error(f"Error sending to remote server: {e}")
+                    self.remote_socket = None
+
+        except Exception as e:
+            self.logger.error(f"Error in broadcast_message: {e}")
+
 
     def _remove_client(self, client: socket.socket):
         """Remove client and clean up resources."""
@@ -1231,7 +1215,7 @@ class PicADSBMultiplexer:
         """Main operation loop."""
         self.logger.info("Starting multiplexer...")
         last_sync_check = time.time()
-        last_heartbeat = time.time()  # Добавьте эту строку
+        last_heartbeat = time.time()
 
         # Connect to remote server if specified
         if self.remote_host and self.remote_port:
@@ -1286,8 +1270,6 @@ class PicADSBMultiplexer:
                         try:
                             message = self.message_queue.get_nowait()
                             self._broadcast_message(message)
-                            # Send data to remote server
-                            self._send_to_remote(message)
                         except queue.Empty:
                             break
 
