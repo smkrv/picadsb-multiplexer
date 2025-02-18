@@ -687,23 +687,34 @@ class PicADSBMultiplexer:
             self._remove_client(client)
 
     def _encode_beast_timestamp(self) -> bytes:
-        """Generate 6-byte MLAT timestamp."""
+        """
+        Generate 6-byte MLAT timestamp in Beast format.
+        Format: 6 bytes representing microseconds since midnight UTC
+        """
         try:
-            # Get current time in microseconds
-            timestamp = int((time.time() % 86400) * 1e6)  # Use only time within current day
+            # Get current UTC time
+            now = datetime.utcnow()
+
+            # Calculate microseconds since midnight
+            midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            delta = now - midnight
+            microseconds = int(delta.total_seconds() * 1e6)
 
             # Ensure the value fits in 6 bytes (48 bits)
-            timestamp &= 0xFFFFFFFFFFFF  # Limit to 48 bits
+            microseconds &= 0xFFFFFFFFFFFF
 
             # Convert to 6 bytes, big-endian
-            return timestamp.to_bytes(6, byteorder='big')
+            return microseconds.to_bytes(6, byteorder='big')
         except Exception as e:
             self.logger.error(f"Error encoding timestamp: {e}")
             # Return zero timestamp in case of error
             return b'\x00\x00\x00\x00\x00\x00'
 
     def _escape_beast_bytes(self, data: bytes) -> bytes:
-        """Escape 0x1a bytes in data."""
+        """
+        Escape 0x1a bytes in data according to Beast protocol.
+        If 0x1a appears in the data, it should be escaped as 0x1a 0x1a
+        """
         result = bytearray()
         for byte in data:
             if byte == BeastFormat.ESCAPE:
@@ -713,19 +724,17 @@ class PicADSBMultiplexer:
         return bytes(result)
 
     def _create_beast_message(self, msg_type: int, data: bytes) -> bytes:
-        """Create Beast format message with escaping."""
+        """Create Beast format message with proper escaping."""
         try:
             timestamp = self._encode_beast_timestamp()
             escaped_data = self._escape_beast_bytes(data)
 
-            self.logger.debug(f"Creating Beast message:")
-            self.logger.debug(f"  Type: 0x{msg_type:02x}")
-            self.logger.debug(f"  Timestamp: {timestamp.hex()}")
-            self.logger.debug(f"  Data: {escaped_data.hex()}")
-
-            message = bytearray([BeastFormat.ESCAPE, msg_type])
-            message.extend(timestamp)
-            message.extend(escaped_data)
+            # Format: <0x1a> <type> <timestamp> <data>
+            message = bytearray()
+            message.append(BeastFormat.ESCAPE)  # Start marker
+            message.append(msg_type)            # Message type
+            message.extend(timestamp)           # 6-byte timestamp
+            message.extend(escaped_data)        # Escaped data
 
             return bytes(message)
         except Exception as e:
