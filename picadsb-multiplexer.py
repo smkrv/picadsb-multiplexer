@@ -76,36 +76,45 @@ class TimestampGenerator:
         self.logger = logging.getLogger('PicADSB.Timestamp')
         self.last_system_time = time.time()
         self.last_timestamp = 0
-        self.min_increment = 1 
+        self.min_increment = 1
 
     def get_timestamp(self) -> bytes:
         """
         Generate monotonically increasing timestamp with system time validation.
-
-        Returns:
-            6-byte timestamp in big-endian format
         """
         try:
             current_system_time = time.time()
             system_delta = current_system_time - self.last_system_time
 
+            # Получаем текущее время UTC
             now = datetime.now(timezone.utc)
             midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
             delta = now - midnight
             current_micros = int(delta.total_seconds() * 1e6)
 
+            # Если это первый запуск
+            if self.last_micros == 0:
+                self.last_micros = current_micros
+                self.last_system_time = current_system_time
+                return current_micros.to_bytes(6, 'big')
+
+            # Обработка перехода через полночь
             if current_micros < self.last_micros:
                 self.offset += BeastFormat.MAX_TIMESTAMP + 1
                 self.logger.debug("Timestamp wrapped around midnight")
 
+            # Проверка на большие скачки времени (более 1 секунды)
             expected_micros = self.last_micros + int(system_delta * 1e6)
-            if abs(current_micros - expected_micros) > 1000000:  # Более 1 секунды разницы
-                self.logger.warning(f"Large timestamp jump detected: {(current_micros - expected_micros)/1e6:.3f}s")
+            if abs(current_micros - expected_micros) > 1000000:
+                self.logger.debug(f"Time jump detected: current={current_micros}, expected={expected_micros}")
+                # Используем ожидаемое значение вместо текущего
                 current_micros = expected_micros
 
+            # Обеспечиваем монотонность
             if current_micros <= self.last_micros:
                 current_micros = self.last_micros + self.min_increment
 
+            # Применяем смещение и ограничиваем значение
             adjusted_micros = (current_micros + self.offset) % (BeastFormat.MAX_TIMESTAMP + 1)
 
             self.last_micros = current_micros
@@ -119,6 +128,7 @@ class TimestampGenerator:
             fallback = (self.last_timestamp + self.min_increment) % BeastFormat.MAX_TIMESTAMP
             self.last_timestamp = fallback
             return fallback.to_bytes(6, 'big')
+
 
 class CRC24:
     """
