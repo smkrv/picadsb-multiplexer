@@ -70,38 +70,55 @@ class TimestampGenerator:
     """Generates monotonic timestamps for Beast format messages."""
 
     def __init__(self):
+        """Initialize timestamp generator with system time reference."""
         self.last_micros = 0
         self.offset = 0
         self.logger = logging.getLogger('PicADSB.Timestamp')
         self.last_system_time = time.time()
+        self.last_timestamp = 0
+        self.min_increment = 1  # Минимальный инкремент между метками (микросекунды)
 
     def get_timestamp(self) -> bytes:
         """
-        Generate monotonically increasing timestamp.
+        Generate monotonically increasing timestamp with system time validation.
 
         Returns:
             6-byte timestamp in big-endian format
         """
         try:
+            current_system_time = time.time()
+            system_delta = current_system_time - self.last_system_time
+
             now = datetime.now(timezone.utc)
             midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
             delta = now - midnight
             current_micros = int(delta.total_seconds() * 1e6)
 
-            # Handle overflow and ensure monotonicity
             if current_micros < self.last_micros:
                 self.offset += BeastFormat.MAX_TIMESTAMP + 1
                 self.logger.debug("Timestamp wrapped around midnight")
 
-            self.last_micros = current_micros
+            expected_micros = self.last_micros + int(system_delta * 1e6)
+            if abs(current_micros - expected_micros) > 1000000:  # Более 1 секунды разницы
+                self.logger.warning(f"Large timestamp jump detected: {(current_micros - expected_micros)/1e6:.3f}s")
+                current_micros = expected_micros
+
+            if current_micros <= self.last_micros:
+                current_micros = self.last_micros + self.min_increment
+
             adjusted_micros = (current_micros + self.offset) % (BeastFormat.MAX_TIMESTAMP + 1)
+
+            self.last_micros = current_micros
+            self.last_system_time = current_system_time
+            self.last_timestamp = adjusted_micros
 
             return adjusted_micros.to_bytes(6, 'big')
 
         except Exception as e:
             self.logger.error(f"Timestamp generation error: {e}")
-            # Return fallback timestamp in case of error
-            return (int(time.time() * 1e6) % BeastFormat.MAX_TIMESTAMP).to_bytes(6, 'big')
+            fallback = (self.last_timestamp + self.min_increment) % BeastFormat.MAX_TIMESTAMP
+            self.last_timestamp = fallback
+            return fallback.to_bytes(6, 'big')
 
 class CRC24:
     """
