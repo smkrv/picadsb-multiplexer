@@ -76,7 +76,7 @@ class TimestampGenerator:
         self.logger = logging.getLogger('PicADSB.Timestamp')
         self.last_system_time = time.time()
         self.last_timestamp = 0
-        self.min_increment = 1  # Минимальный инкремент между метками (микросекунды)
+        self.min_increment = 1 
 
     def get_timestamp(self) -> bytes:
         """
