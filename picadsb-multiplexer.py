@@ -51,6 +51,9 @@ class BeastFormat:
     MODEA_LEN = 2
     TIMESTAMP_LEN = 6
 
+    # 12 hours in microseconds
+    TIMESTAMP_MODULO = 43200000000
+
 class PicADSBMultiplexer:
     """Main multiplexer class that handles device communication and client connections."""
 
@@ -689,7 +692,7 @@ class PicADSBMultiplexer:
     def _encode_beast_timestamp(self) -> bytes:
         """
         Generate 6-byte MLAT timestamp in Beast format.
-        Format: 6 bytes representing microseconds since midnight UTC
+        Timestamp is microseconds since midnight, modulo 12 hours
         """
         try:
             # Get current UTC time
@@ -700,14 +703,13 @@ class PicADSBMultiplexer:
             delta = now - midnight
             microseconds = int(delta.total_seconds() * 1e6)
 
-            # Ensure the value fits in 6 bytes (48 bits)
-            microseconds &= 0xFFFFFFFFFFFF
+            # Modulo 12 hours (12 * 3600 * 1000000 microseconds)
+            microseconds %= 43200000000
 
             # Convert to 6 bytes, big-endian
             return microseconds.to_bytes(6, byteorder='big')
         except Exception as e:
             self.logger.error(f"Error encoding timestamp: {e}")
-            # Return zero timestamp in case of error
             return b'\x00\x00\x00\x00\x00\x00'
 
     def _escape_beast_bytes(self, data: bytes) -> bytes:
@@ -729,12 +731,17 @@ class PicADSBMultiplexer:
             timestamp = self._encode_beast_timestamp()
             escaped_data = self._escape_beast_bytes(data)
 
-            # Format: <0x1a> <type> <timestamp> <data>
+            self.logger.debug(f"Creating Beast message:")
+            self.logger.debug(f"  Type: 0x{msg_type:02x}")
+            self.logger.debug(f"  Timestamp (hex): {timestamp.hex()}")
+            self.logger.debug(f"  Timestamp (μs): {int.from_bytes(timestamp, byteorder='big')}")
+            self.logger.debug(f"  Data: {escaped_data.hex()}")
+
             message = bytearray()
-            message.append(BeastFormat.ESCAPE)  # Start marker
-            message.append(msg_type)            # Message type
-            message.extend(timestamp)           # 6-byte timestamp
-            message.extend(escaped_data)        # Escaped data
+            message.append(BeastFormat.ESCAPE)
+            message.append(msg_type)
+            message.extend(timestamp)
+            message.extend(escaped_data)
 
             return bytes(message)
         except Exception as e:
