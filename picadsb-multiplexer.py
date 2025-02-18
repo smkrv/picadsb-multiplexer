@@ -70,10 +70,14 @@ class TimestampGenerator:
     """Generates monotonic timestamps for Beast format messages."""
 
     def __init__(self):
-        """Initialize timestamp generator."""
         self.last_micros = 0
         self.offset = 0
         self.logger = logging.getLogger('PicADSB.Timestamp')
+        self.last_system_time = time.time()
+
+    def get_timestamp(self) -> bytes:
+        """Generate monotonically increasing timestamp."""
+        try
 
     def get_timestamp(self) -> bytes:
         """
@@ -347,12 +351,36 @@ class PicADSBMultiplexer:
             self.remote_socket = None
 
     def _send_to_remote(self, data: bytes):
-        """Send data to remote server."""
+        """
+        Send data to remote server in Beast format.
+
+        Args:
+            data: Raw message data
+        """
         if not self.remote_socket:
             return
 
         try:
-            self.remote_socket.send(data)
+            # Конвертируем в Beast формат, если это еще не Beast
+            if data.startswith(b'*'):
+                beast_msg = self._convert_to_beast(data)
+                if not beast_msg:
+                    return
+            else:
+                beast_msg = data
+
+            # Проверяем валидность Beast сообщения
+            if not self._validate_beast_message(beast_msg):
+                self.logger.debug(f"Invalid Beast message, skipping: {beast_msg.hex()}")
+                return
+
+            # Отправляем данные
+            sent = self.remote_socket.send(beast_msg)
+            if sent == 0:
+                raise BrokenPipeError("Zero bytes sent")
+
+            self.logger.debug(f"Sent to remote: {beast_msg.hex()}")
+
         except Exception as e:
             self.logger.error(f"Error sending to remote server: {e}")
             self.remote_socket = None
