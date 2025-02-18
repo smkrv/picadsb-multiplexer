@@ -1056,7 +1056,7 @@ class PicADSBMultiplexer:
         try:
             # Unescape and validate basic structure
             unescaped = self._unescape_beast_data(message)
-            if len(unescaped) < (1 + 1 + BeastFormat.TIMESTAMP_LEN + 3):
+            if len(unescaped) < 10:  # Minimum length: escape + type + timestamp + 1 byte data + CRC
                 return False
 
             if unescaped[0] != BeastFormat.ESCAPE:
@@ -1073,25 +1073,29 @@ class PicADSBMultiplexer:
             if not expected_len:
                 return False
 
-            total_len = 8 + expected_len + 3  # header + data + CRC
+            # Calculate expected total length:
+            # 1 (escape) + 1 (type) + 6 (timestamp) + data_len + 3 (CRC)
+            total_len = 1 + 1 + 6 + expected_len + 3
+
             if len(unescaped) != total_len:
+                self.logger.debug(f"Length mismatch: expected {total_len}, got {len(unescaped)}")
                 return False
 
-            # Extract and verify CRC
-            data = unescaped[8:-3]
+            # Extract data and CRC
+            data_start = 8  # After escape + type + timestamp
+            data_end = -3   # Before CRC
+            data = unescaped[data_start:data_end]
             received_crc = unescaped[-3:]
+
+            # Calculate and verify CRC
             calculated_crc = CRC24.compute(data)
 
-            if calculated_crc != received_crc:
-                self.logger.debug(f"CRC mismatch: calc={calculated_crc.hex()}, "
-                                f"recv={received_crc.hex()}")
-                return False
-
-            return True
+            return calculated_crc == received_crc
 
         except Exception as e:
-            self.logger.error(f"Beast message validation failed: {e}")
+            self.logger.error(f"Beast message validation error: {e}")
             return False
+
 
     def test_beast_format(self):
         """
@@ -1128,6 +1132,7 @@ class PicADSBMultiplexer:
 
     def _broadcast_message(self, data: bytes):
         """Broadcast data to all connected clients in Beast format."""
+        # Convert message only once
         beast_msg = self._convert_to_beast(data)
         if not beast_msg:
             self.logger.debug(f"Failed to convert message to Beast format: {data!r}")
@@ -1135,6 +1140,7 @@ class PicADSBMultiplexer:
 
         self.logger.debug(f"Broadcasting Beast message: {beast_msg.hex()}")
 
+        # Send to clients
         disconnected_clients = []
         for client in self.clients:
             try:
@@ -1146,8 +1152,13 @@ class PicADSBMultiplexer:
                 self.logger.debug(f"Error sending to client: {e}")
                 disconnected_clients.append(client)
 
+        # Remove disconnected clients
         for client in disconnected_clients:
             self._remove_client(client)
+
+        # Send to remote server only once
+        if self.remote_socket:
+            self._send_to_remote(beast_msg)  # Send the already converted message
 
     def _remove_client(self, client: socket.socket):
         """Remove client and clean up resources."""
