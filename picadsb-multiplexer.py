@@ -179,6 +179,13 @@ class PicADSBMultiplexer:
         if not self.remote_host or not self.remote_port:
             return
 
+        current_time = time.time()
+        if hasattr(self, '_last_connect_attempt') and \
+           current_time - self._last_connect_attempt < 60:  # Ждем 60 секунд между попытками
+            return
+
+        self._last_connect_attempt = current_time
+
         try:
             if self.remote_socket:
                 try:
@@ -187,11 +194,12 @@ class PicADSBMultiplexer:
                     pass
 
             self.remote_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.remote_socket.settimeout(5)
             self.remote_socket.connect((self.remote_host, self.remote_port))
             self.remote_socket.setblocking(False)
             self.logger.info(f"Connected to remote server {self.remote_host}:{self.remote_port}")
         except Exception as e:
-            self.logger.error(f"Failed to connect to remote server: {e}")
+            self.logger.warning(f"Failed to connect to remote server: {e}")
             self.remote_socket = None
 
     def _send_to_remote(self, data: bytes):
@@ -210,7 +218,7 @@ class PicADSBMultiplexer:
     def _check_remote_connection(self):
         """
         Check remote connection status and attempt to reconnect if needed.
-        This check runs every 15 seconds to ensure stable remote connection.
+        This check runs every 60 seconds to ensure stable remote connection.
         """
         current_time = time.time()
 
@@ -219,16 +227,13 @@ class PicADSBMultiplexer:
                 self.last_remote_check = current_time
 
                 if not self.remote_socket:
-                    self.logger.info("Remote connection check: attempting to reconnect...")
                     self._connect_to_remote()
                 else:
-                    # Проверяем соединение отправкой keepalive
                     try:
                         self.remote_socket.send(b'\n')
                     except Exception as e:
                         self.logger.warning(f"Remote connection test failed: {e}")
                         self.remote_socket = None
-
 
     def _init_serial(self):
         """Initialize serial port with device configuration."""
@@ -873,11 +878,6 @@ class PicADSBMultiplexer:
 
                     # Check and maintain remote connection
                     self._check_remote_connection()
-
-                    # Add remote_socket to read list if it exists
-                    sockets_to_read = [self.server_socket] + self.clients
-                    if self.remote_socket:
-                        sockets_to_read.append(self.remote_socket)
 
                     # Add remote_socket to read list if it exists
                     sockets_to_read = [self.server_socket] + self.clients
