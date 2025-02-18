@@ -114,25 +114,26 @@ class CRC24:
     """
     Optimized CRC-24 implementation with lookup table.
     Polynomial: 0x1FFF409 (Mode-S specific)
-
-    Performance: ~8x faster than bit-by-bit calculation
     """
-    # Pre-calculated lookup table for CRC-24
-    _table = [None] * 256
-    for byte in range(256):
-        remainder = byte << 16
-        for _ in range(8):
-            if remainder & 0x800000:
-                remainder = (remainder << 1) ^ 0x1FFF409
-            else:
-                remainder <<= 1
-            remainder &= 0xFFFFFF
-        _table[byte] = remainder
+    POLYNOMIAL = 0x1FFF409
+    TABLE = [0] * 256
 
-    @staticmethod
-    def compute(data: bytes) -> bytes:
+    @classmethod
+    def _generate_table(cls):
+        """Generate lookup table for CRC-24 calculation."""
+        for i in range(256):
+            crc = i << 16
+            for _ in range(8):
+                if crc & 0x800000:
+                    crc = ((crc << 1) ^ cls.POLYNOMIAL) & 0xFFFFFF
+                else:
+                    crc = (crc << 1) & 0xFFFFFF
+            cls.TABLE[i] = crc
+
+    @classmethod
+    def compute(cls, data: bytes) -> bytes:
         """
-        Compute CRC-24 using lookup table optimization.
+        Compute CRC-24 for Mode-S message.
 
         Args:
             data: Raw Mode-S message bytes
@@ -140,11 +141,29 @@ class CRC24:
         Returns:
             3-byte CRC value in big-endian order
         """
-        remainder = 0
+        if not cls.TABLE[1]:  # Initialize table on first use
+            cls._generate_table()
+
+        crc = 0
         for byte in data:
-            remainder = CRC24._table[(byte ^ (remainder >> 16)) & 0xFF] ^ (remainder << 8)
-            remainder &= 0xFFFFFF
-        return remainder.to_bytes(3, 'big')
+            crc = ((crc << 8) ^ cls.TABLE[((crc >> 16) ^ byte) & 0xFF]) & 0xFFFFFF
+
+        return crc.to_bytes(3, 'big')
+
+    @classmethod
+    def verify(cls, message: bytes, crc: bytes) -> bool:
+        """
+        Verify CRC of a message.
+
+        Args:
+            message: Raw message without CRC
+            crc: Expected CRC bytes
+
+        Returns:
+            True if CRC matches
+        """
+        computed = cls.compute(message)
+        return computed == crc
 
 class PicADSBMultiplexer:
     """Main multiplexer class that handles device communication and client connections."""
@@ -259,6 +278,10 @@ class PicADSBMultiplexer:
         # Setup signal handlers
         signal.signal(signal.SIGINT, self._signal_handler)
         signal.signal(signal.SIGTERM, self._signal_handler)
+
+        # Perform self-test
+        if not self.self_test():
+            raise RuntimeError("Self-test failed, aborting startup")
 
 
     def _send_heartbeat(self):
@@ -913,55 +936,38 @@ class PicADSBMultiplexer:
         return bytes(unescaped)
 
     def _create_beast_message(self, msg_type: int, data: bytes) -> bytes:
-        """
-        Create Beast format message with proper structure.
-
-        Format:
-        [0x1A][type][6-byte timestamp][data][3-byte CRC]
-
-        Args:
-            msg_type: Message type (0x31, 0x32, or 0x33)
-            data: Raw Mode-S/Mode-A data
-
-        Returns:
-            Complete Beast message or None on error
-        """
+        """Create Beast format message with proper CRC."""
         try:
-            # Validate message type and length
-            expected_len = {
-                BeastFormat.TYPE_MODEA: BeastFormat.MODEA_LEN,
-                BeastFormat.TYPE_MODES_SHORT: BeastFormat.MODES_SHORT_LEN,
-                BeastFormat.TYPE_MODES_LONG: BeastFormat.MODES_LONG_LEN
-            }.get(msg_type)
+            # Validate input
+            if msg_type not in (BeastFormat.TYPE_MODEA,
+                               BeastFormat.TYPE_MODES_SHORT,
+                               BeastFormat.TYPE_MODES_LONG):
+                raise ValueError(f"Invalid message type: 0x{msg_type:02x}")
 
-            if not expected_len or len(data) != expected_len:
-                raise ValueError(f"Invalid message length for type 0x{msg_type:02x}")
+            if len(data) not in (BeastFormat.MODEA_LEN,
+                                BeastFormat.MODES_SHORT_LEN,
+                                BeastFormat.MODES_LONG_LEN):
+                raise ValueError(f"Invalid data length: {len(data)}")
 
-            # Generate message components
-            timestamp = self._encode_beast_timestamp()
+            # Generate components
+            timestamp = self.timestamp_gen.get_timestamp()
             crc = CRC24.compute(data)
+
+            # Log for debugging
+            self.logger.debug(f"Beast message components:")
+            self.logger.debug(f"  Type: 0x{msg_type:02x}")
+            self.logger.debug(f"  Data: {data.hex()}")
+            self.logger.debug(f"  CRC:  {crc.hex()}")
 
             # Assemble message
             message = bytearray()
-            message.append(BeastFormat.ESCAPE)  # Preamble
-            message.append(msg_type)            # Type
-            message.extend(timestamp)           # Timestamp
-            message.extend(data)                # Data
-            message.extend(crc)                 # CRC
+            message.append(BeastFormat.ESCAPE)
+            message.append(msg_type)
+            message.extend(timestamp)
+            message.extend(data)
+            message.extend(crc)
 
-            # Handle escape sequences
-            final_message = bytearray([BeastFormat.ESCAPE])
-            for b in message[1:]:
-                if b == BeastFormat.ESCAPE:
-                    final_message.extend([BeastFormat.ESCAPE, BeastFormat.ESCAPE])
-                else:
-                    final_message.append(b)
-
-            self.logger.debug(f"Beast message: type=0x{msg_type:02x}, "
-                             f"ts={timestamp.hex()}, data={data.hex()}, "
-                             f"crc={crc.hex()}")
-
-            return bytes(final_message)
+            return self._escape_beast_data(bytes(message))
 
         except Exception as e:
             self.logger.error(f"Beast message creation failed: {e}")
@@ -1062,37 +1068,80 @@ class PicADSBMultiplexer:
 
 
     def test_beast_format(self):
-        """
-        Comprehensive Beast format verification suite.
+        """Comprehensive Beast format verification suite."""
+        test_vectors = [
+            # Original test
+            ("8D406B902015A678D4D2200AA728", "1A3280EA1A9E8D406B902015A678D4D2200AA7284F3E5D", BeastFormat.TYPE_MODES_LONG),
+            # Additional tests
+            ("5D8965B360ADD7", "1A3280EA1A9E5D8965B360ADD71D2A9C", BeastFormat.TYPE_MODES_SHORT),
+            ("5D8965B360ADDB", "1A3280EA1A9E5D8965B360ADDB00485A", BeastFormat.TYPE_MODES_SHORT)
+        ]
 
-        Tests:
-        - Message creation
-        - CRC calculation
-        - Validation
-        - Error handling
-        - Reference data compliance
-        """
-        # Reference test data from Beast specification
-        data = bytes.fromhex("8D406B902015A678D4D2200AA728")
-        expected = bytes.fromhex("1A3280EA1A9E8D406B902015A678D4D2200AA7284F3E5D")
+        for hex_data, expected_msg, msg_type in test_vectors:
+            data = bytes.fromhex(hex_data)
+            msg = self._create_beast_message(msg_type, data)
 
-        # Test message creation
-        msg = self._create_beast_message(BeastFormat.TYPE_MODES_SHORT, data)
-        assert msg == expected, f"Format mismatch:\nExp: {expected.hex()}\nGot: {msg.hex()}"
+            # Test message creation
+            assert msg == bytes.fromhex(expected_msg), \
+                   f"Format mismatch for {hex_data}:\n" \
+                   f"Expected: {expected_msg}\n" \
+                   f"Got: {msg.hex()}"
 
-        # Test validation
-        assert self._validate_beast_message(msg), "Validation failed"
+            # Test validation
+            assert self._validate_beast_message(msg), \
+                   f"Validation failed for {hex_data}"
 
-        # Test corruption detection
-        corrupted = bytearray(msg)
-        corrupted[-1] ^= 0xFF
-        assert not self._validate_beast_message(bytes(corrupted)), \
-               "Corruption undetected"
+            # Test corruption detection
+            corrupted = bytearray(msg)
+            corrupted[-1] ^= 0xFF
+            assert not self._validate_beast_message(bytes(corrupted)), \
+                   f"Corruption undetected for {hex_data}"
 
-        # Test escape handling
-        escaped = msg.replace(bytes([BeastFormat.ESCAPE]),
-                             bytes([BeastFormat.ESCAPE, BeastFormat.ESCAPE]))
-        assert self._validate_beast_message(escaped), "Escape handling failed"
+            # Test escape handling
+            escaped = msg.replace(bytes([BeastFormat.ESCAPE]),
+                                bytes([BeastFormat.ESCAPE, BeastFormat.ESCAPE]))
+            assert self._validate_beast_message(escaped), \
+                   f"Escape handling failed for {hex_data}"
+
+
+    def self_test(self):
+        """Perform self-test on startup."""
+        self.logger.info("Performing self-test...")
+
+        try:
+            # Test vectors from real messages
+            test_vectors = [
+                ("8D406B902015A678D4D2200AA728", "4F3E5D", BeastFormat.TYPE_MODES_LONG),
+                ("5D8965B360ADD7", "1D2A9C", BeastFormat.TYPE_MODES_SHORT),
+                ("5D8965B360ADDB", "00485A", BeastFormat.TYPE_MODES_SHORT)
+            ]
+
+            for hex_data, expected_crc, msg_type in test_vectors:
+                # Test CRC calculation
+                data = bytes.fromhex(hex_data)
+                crc = CRC24.compute(data)
+                if crc.hex().upper() != expected_crc:
+                    raise ValueError(
+                        f"CRC mismatch for {hex_data}:\n"
+                        f"Expected: {expected_crc}\n"
+                        f"Got: {crc.hex().upper()}"
+                    )
+
+                # Test message creation
+                msg = self._create_beast_message(msg_type, data)
+                if not msg:
+                    raise ValueError(f"Failed to create Beast message for {hex_data}")
+
+                # Test message validation
+                if not self._validate_beast_message(msg):
+                    raise ValueError(f"Message validation failed for {hex_data}")
+
+            self.logger.info("Self-test passed successfully ✓")
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Self-test failed: {e}")
+            return False
 
     def _broadcast_message(self, data: bytes):
         """Broadcast data to all connected clients in Beast format."""
