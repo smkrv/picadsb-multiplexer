@@ -37,6 +37,7 @@ import time
 import os
 import signal
 from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List, Tuple
 
 class BeastFormat:
