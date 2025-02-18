@@ -36,7 +36,6 @@ import sys
 import time
 import os
 import signal
-from datetime import datetime
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List, Tuple
 
@@ -64,8 +63,45 @@ class BeastFormat:
     MODEA_LEN = 2
     TIMESTAMP_LEN = 6
 
-    # Maximum time span for 6-byte timestamp (7h58m)
-    MAX_TIMESTAMP = 2**(6*8)  # microseconds
+    # Maximum value for 6-byte timestamp (2^48-1)
+    MAX_TIMESTAMP = 0xFFFFFFFFFFFF
+
+class TimestampGenerator:
+    """Generates monotonic timestamps for Beast format messages."""
+
+    def __init__(self):
+        """Initialize timestamp generator."""
+        self.last_micros = 0
+        self.offset = 0
+        self.logger = logging.getLogger('PicADSB.Timestamp')
+
+    def get_timestamp(self) -> bytes:
+        """
+        Generate monotonically increasing timestamp.
+
+        Returns:
+            6-byte timestamp in big-endian format
+        """
+        try:
+            now = datetime.now(timezone.utc)
+            midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            delta = now - midnight
+            current_micros = int(delta.total_seconds() * 1e6)
+
+            # Handle overflow and ensure monotonicity
+            if current_micros < self.last_micros:
+                self.offset += BeastFormat.MAX_TIMESTAMP + 1
+                self.logger.debug("Timestamp wrapped around midnight")
+
+            self.last_micros = current_micros
+            adjusted_micros = (current_micros + self.offset) % (BeastFormat.MAX_TIMESTAMP + 1)
+
+            return adjusted_micros.to_bytes(6, 'big')
+
+        except Exception as e:
+            self.logger.error(f"Timestamp generation error: {e}")
+            # Return fallback timestamp in case of error
+            return (int(time.time() * 1e6) % BeastFormat.MAX_TIMESTAMP).to_bytes(6, 'big')
 
 class CRC24:
     """
@@ -159,6 +195,7 @@ class PicADSBMultiplexer:
         self.remote_port = remote_port
         self.remote_socket = None
         self._setup_logging(log_level)
+        self.timestamp_gen = TimestampGenerator()
 
         # Runtime state
         self.running = True
@@ -169,6 +206,9 @@ class PicADSBMultiplexer:
         self._no_data_logged = False
         self._sync_state = True
         self._last_sync_time = time.time()
+        # Add heartbeat configuration
+        self.HEARTBEAT_INTERVAL = 30  # 30 seconds
+        self.last_heartbeat = time.time()
 
         # Statistics
         self.stats = {
@@ -212,6 +252,58 @@ class PicADSBMultiplexer:
         # Setup signal handlers
         signal.signal(signal.SIGINT, self._signal_handler)
         signal.signal(signal.SIGTERM, self._signal_handler)
+
+
+    def _send_heartbeat(self):
+        """
+        Send properly formatted Beast heartbeat message.
+
+        Implements Beast format specification for Mode-A heartbeat messages
+        with proper timestamp and CRC.
+        """
+        try:
+            # Create Mode-A message with null data
+            timestamp = self.timestamp_gen.get_timestamp()
+            data = bytes([0x00, 0x00])  # Mode-A requires 2-byte data
+            crc = CRC24.compute(data)
+
+            # Construct message with proper structure
+            message = bytearray()
+            message.append(BeastFormat.ESCAPE)
+            message.append(BeastFormat.TYPE_MODEA)
+            message.extend(timestamp)
+            message.extend(data)
+            message.extend(crc)
+
+            # Apply escape sequences
+            final_msg = self._escape_beast_data(bytes(message))
+
+            # Send to all clients
+            disconnected = []
+            for client in self.clients:
+                try:
+                    sent = client.send(final_msg)
+                    if sent == 0:
+                        raise BrokenPipeError("Zero bytes sent")
+                    self.logger.debug(f"Heartbeat sent: {final_msg.hex()}")
+                except Exception as e:
+                    self.logger.warning(f"Failed to send heartbeat: {e}")
+                    disconnected.append(client)
+
+            # Clean up disconnected clients
+            for client in disconnected:
+                self._remove_client(client)
+
+            # Send to remote if configured
+            if self.remote_socket:
+                try:
+                    self.remote_socket.send(final_msg)
+                except Exception as e:
+                    self.logger.error(f"Remote heartbeat failed: {e}")
+                    self.remote_socket = None
+
+        except Exception as e:
+            self.logger.error(f"Heartbeat generation failed: {e}")
 
     def _init_socket(self):
         """Initialize TCP server socket."""
@@ -756,6 +848,27 @@ class PicADSBMultiplexer:
         microseconds = int(elapsed * 1e6) % BeastFormat.MAX_TIMESTAMP
         return microseconds.to_bytes(6, 'big')
 
+    def _escape_beast_data(self, data: bytes) -> bytes:
+        """
+        Escape Beast format data according to protocol specification.
+
+        When 0x1A appears in the data, it must be escaped as 0x1A 0x1A.
+
+        Args:
+            data: Raw message bytes
+
+        Returns:
+            Escaped message bytes
+        """
+        result = bytearray()
+        for byte in data:
+            if byte == BeastFormat.ESCAPE:
+                result.extend([BeastFormat.ESCAPE, BeastFormat.ESCAPE])
+            else:
+                result.append(byte)
+        return bytes(result)
+
+
     def _unescape_beast_data(self, message: bytes) -> bytes:
         """
         Remove escape sequences from Beast message.
@@ -784,19 +897,6 @@ class PicADSBMultiplexer:
                 unescaped.append(message[i])
                 i += 1
         return bytes(unescaped)
-
-    def _escape_beast_bytes(self, data: bytes) -> bytes:
-        """
-        Escape 0x1a bytes in data according to Beast protocol.
-        If 0x1a appears in the data, it should be escaped as 0x1a 0x1a
-        """
-        result = bytearray()
-        for byte in data:
-            if byte == BeastFormat.ESCAPE:
-                result.extend([BeastFormat.ESCAPE, BeastFormat.ESCAPE])
-            else:
-                result.append(byte)
-        return bytes(result)
 
     def _create_beast_message(self, msg_type: int, data: bytes) -> bytes:
         """
@@ -1075,6 +1175,7 @@ class PicADSBMultiplexer:
         """Main operation loop."""
         self.logger.info("Starting multiplexer...")
         last_sync_check = time.time()
+        last_heartbeat = time.time()  # Добавьте эту строку
 
         # Connect to remote server if specified
         if self.remote_host and self.remote_port:
@@ -1083,6 +1184,13 @@ class PicADSBMultiplexer:
         try:
             while self.running:
                 try:
+                    current_time = time.time()
+
+                    # Send heartbeat if needed
+                    if current_time - last_heartbeat >= self.HEARTBEAT_INTERVAL:
+                        self._send_heartbeat()
+                        last_heartbeat = current_time
+
                     self._process_serial_data()
 
                     # Check and maintain remote connection
