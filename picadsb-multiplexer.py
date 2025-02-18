@@ -76,10 +76,6 @@ class TimestampGenerator:
         self.last_system_time = time.time()
 
     def get_timestamp(self) -> bytes:
-        """Generate monotonically increasing timestamp."""
-        try
-
-    def get_timestamp(self) -> bytes:
         """
         Generate monotonically increasing timestamp.
 
