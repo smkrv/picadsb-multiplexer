@@ -688,8 +688,19 @@ class PicADSBMultiplexer:
 
     def _encode_beast_timestamp(self) -> bytes:
         """Generate 6-byte MLAT timestamp."""
-        timestamp = int(time.time() * 1e6)  # microseconds
-        return timestamp.to_bytes(6, byteorder='big')
+        try:
+            # Get current time in microseconds
+            timestamp = int((time.time() % 86400) * 1e6)  # Use only time within current day
+
+            # Ensure the value fits in 6 bytes (48 bits)
+            timestamp &= 0xFFFFFFFFFFFF  # Limit to 48 bits
+
+            # Convert to 6 bytes, big-endian
+            return timestamp.to_bytes(6, byteorder='big')
+        except Exception as e:
+            self.logger.error(f"Error encoding timestamp: {e}")
+            # Return zero timestamp in case of error
+            return b'\x00\x00\x00\x00\x00\x00'
 
     def _escape_beast_bytes(self, data: bytes) -> bytes:
         """Escape 0x1a bytes in data."""
@@ -703,14 +714,23 @@ class PicADSBMultiplexer:
 
     def _create_beast_message(self, msg_type: int, data: bytes) -> bytes:
         """Create Beast format message with escaping."""
-        timestamp = self._encode_beast_timestamp()
-        escaped_data = self._escape_beast_bytes(data)
+        try:
+            timestamp = self._encode_beast_timestamp()
+            escaped_data = self._escape_beast_bytes(data)
 
-        message = bytearray([BeastFormat.ESCAPE, msg_type])
-        message.extend(timestamp)
-        message.extend(escaped_data)
+            self.logger.debug(f"Creating Beast message:")
+            self.logger.debug(f"  Type: 0x{msg_type:02x}")
+            self.logger.debug(f"  Timestamp: {timestamp.hex()}")
+            self.logger.debug(f"  Data: {escaped_data.hex()}")
 
-        return bytes(message)
+            message = bytearray([BeastFormat.ESCAPE, msg_type])
+            message.extend(timestamp)
+            message.extend(escaped_data)
+
+            return bytes(message)
+        except Exception as e:
+            self.logger.error(f"Error creating Beast message: {e}")
+            return None
 
     def _convert_to_beast(self, message: bytes) -> Optional[bytes]:
         """Convert raw message to Beast format."""
@@ -720,32 +740,32 @@ class PicADSBMultiplexer:
                 # Remove * and ; and any whitespace/newlines
                 data = message[1:].rstrip(b';\n\r').strip()
 
-                # Convert hex string to bytes
                 try:
                     raw_data = bytes.fromhex(data.decode())
 
-                    # Determine message type and length
+                    # Determine message type based on first byte and length
                     msg_len = len(raw_data)
+                    first_byte = raw_data[0] if raw_data else 0
 
                     if msg_len == BeastFormat.MODES_SHORT_LEN:
-                        return self._create_beast_message(BeastFormat.TYPE_MODES_SHORT, raw_data)
+                        msg_type = BeastFormat.TYPE_MODES_SHORT
                     elif msg_len == BeastFormat.MODES_LONG_LEN:
-                        return self._create_beast_message(BeastFormat.TYPE_MODES_LONG, raw_data)
+                        msg_type = BeastFormat.TYPE_MODES_LONG
                     else:
                         self.logger.debug(f"Unsupported message length: {msg_len}")
                         return None
 
+                    self.logger.debug(f"Converting message:")
+                    self.logger.debug(f"  Raw data: {raw_data.hex()}")
+                    self.logger.debug(f"  Length: {msg_len}")
+                    self.logger.debug(f"  Type: 0x{msg_type:02x}")
+
+                    return self._create_beast_message(msg_type, raw_data)
+
                 except ValueError as ve:
                     self.logger.debug(f"Invalid hex data in message: {data!r}")
-                    self.logger.debug(f"Raw message: {message!r}")
-                    self.logger.debug(f"Stripped data: {data!r}")
-                    self.logger.debug(f"Hex conversion result: {raw_data.hex()}")
                     return None
 
-            return None
-
-        except Exception as e:
-            self.logger.error(f"Error converting to Beast format: {e}")
             return None
 
         except Exception as e:
