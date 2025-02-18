@@ -79,39 +79,27 @@ class TimestampGenerator:
         self.min_increment = 1
 
     def get_timestamp(self) -> bytes:
-        """
-        Generate monotonically increasing timestamp with system time validation.
-        """
         try:
-            current_system_time = time.time()
-            system_delta = current_system_time - self.last_system_time
-
-            now = datetime.now(timezone.utc)
-            midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
-            delta = now - midnight
-            current_micros = int(delta.total_seconds() * 1e6)
+            current_time = time.time()
+            current_micros = int((current_time % 86400) * 1e6)  # Время с начала дня в микросекундах
 
             if self.last_micros == 0:
                 self.last_micros = current_micros
-                self.last_system_time = current_system_time
+                self.last_system_time = current_time
                 return current_micros.to_bytes(6, 'big')
 
+            # Проверка перехода через полночь
             if current_micros < self.last_micros:
                 self.offset += BeastFormat.MAX_TIMESTAMP + 1
-                self.logger.debug("Timestamp wrapped around midnight")
 
-            expected_micros = self.last_micros + int(system_delta * 1e6)
-            if abs(current_micros - expected_micros) > 1000000:
-                self.logger.debug(f"Time jump detected: current={current_micros}, expected={expected_micros}")
-                current_micros = expected_micros
-
+            # Обеспечение монотонности
             if current_micros <= self.last_micros:
                 current_micros = self.last_micros + self.min_increment
 
             adjusted_micros = (current_micros + self.offset) % (BeastFormat.MAX_TIMESTAMP + 1)
 
             self.last_micros = current_micros
-            self.last_system_time = current_system_time
+            self.last_system_time = current_time
             self.last_timestamp = adjusted_micros
 
             return adjusted_micros.to_bytes(6, 'big')
@@ -121,7 +109,6 @@ class TimestampGenerator:
             fallback = (self.last_timestamp + self.min_increment) % BeastFormat.MAX_TIMESTAMP
             self.last_timestamp = fallback
             return fallback.to_bytes(6, 'big')
-
 
 class CRC24:
     """
@@ -345,7 +332,7 @@ class PicADSBMultiplexer:
 
         current_time = time.time()
         if hasattr(self, '_last_connect_attempt') and \
-           current_time - self._last_connect_attempt < 60: 
+           current_time - self._last_connect_attempt < 60:
             return
 
         self._last_connect_attempt = current_time
@@ -1115,35 +1102,37 @@ class PicADSBMultiplexer:
             else:
                 beast_msg = self._convert_to_beast(data)
                 if not beast_msg:
-                    self.logger.debug(f"Failed to convert message to Beast format: {data!r}")
                     return
 
-            self.logger.debug(f"Broadcasting Beast message: {beast_msg.hex()}")
+            current_time = time.time()
+
+            if hasattr(self, '_last_broadcast_time'):
+                delay = current_time - self._last_broadcast_time
+                if delay > 1.0:
+                    self.logger.warning(f"Large broadcast delay detected: {delay:.3f}s")
+
+            self._last_broadcast_time = current_time
 
             disconnected_clients = []
             for client in self.clients:
                 try:
-                    sent = client.send(beast_msg)
-                    if sent == 0:
-                        raise BrokenPipeError("Connection lost")
-                    self.client_last_active[client] = time.time()
+                    client.send(beast_msg)
+                    self.client_last_active[client] = current_time
                 except Exception as e:
-                    self.logger.debug(f"Error sending to client: {e}")
                     disconnected_clients.append(client)
-
-            for client in disconnected_clients:
-                self._remove_client(client)
 
             if self.remote_socket:
                 try:
                     self.remote_socket.send(beast_msg)
                 except Exception as e:
-                    self.logger.error(f"Error sending to remote server: {e}")
+                    self.logger.error(f"Remote server error: {e}")
                     self.remote_socket = None
 
-        except Exception as e:
-            self.logger.error(f"Error in broadcast_message: {e}")
+            for client in disconnected_clients:
+                self._remove_client(client)
 
+        except Exception as e:
+            self.logger.error(f"Broadcast error: {e}")
 
     def _remove_client(self, client: socket.socket):
         """Remove client and clean up resources."""
