@@ -137,7 +137,7 @@ class CRC24:
                 logging.debug(f"Computing CRC for data: {hex_data}")
 
             # Calculate CRC using pyModeS
-            crc = common.crc(hex_data)
+            crc = common.crc(hex_data, encode=True)  # Note: encode=True for proper CRC calculation
 
             # Convert to bytes
             crc_bytes = bytes.fromhex(format(crc, '06X'))
@@ -170,19 +170,11 @@ class CRC24:
             if debug:
                 logging.debug(f"Verifying CRC for message: {hex_msg}")
 
-            # Extract message without CRC and expected CRC
-            msg_without_crc = hex_msg[:-6]
-            expected_crc = int(hex_msg[-6:], 16)
-
-            # Compute CRC using pyModeS
-            computed_crc = common.crc(msg_without_crc)
-
-            result = computed_crc == expected_crc
+            # Let pyModeS handle the entire message verification
+            # It will automatically handle the CRC check correctly
+            result = common.crc(hex_msg) == 0  # If CRC is valid, remainder should be 0
 
             if debug:
-                logging.debug(f"Message without CRC: {msg_without_crc}")
-                logging.debug(f"Computed CRC: {format(computed_crc, '06X')}")
-                logging.debug(f"Expected CRC: {format(expected_crc, '06X')}")
                 logging.debug(f"CRC verification result: {result}")
 
             return result
@@ -1249,30 +1241,22 @@ class PicADSBMultiplexer:
                 # Convert hex string to bytes
                 msg_bytes = bytes.fromhex(hex_msg)
 
-                # Get message parts for debugging
-                msg_without_crc = hex_msg[:-6]
-                expected_crc = hex_msg[-6:]
-
-                # Compute CRC
-                computed_crc = format(common.crc(msg_without_crc), '06X')
+                # Verify using pyModeS directly first
+                pms_valid = common.crc(hex_msg) == 0
 
                 self.logger.debug(f"Testing message: {hex_msg}")
-                self.logger.debug(f"Message without CRC: {msg_without_crc}")
-                self.logger.debug(f"Expected CRC: {expected_crc}")
-                self.logger.debug(f"Computed CRC: {computed_crc}")
+                self.logger.debug(f"PyModeS direct validation: {pms_valid}")
 
-                # Verify using our implementation
+                # Then verify using our implementation
                 is_valid = CRC24.verify(msg_bytes, debug=True)
 
-                if is_valid != expected_valid:
+                if is_valid != expected_valid or is_valid != pms_valid:
                     self.logger.error(
                         f"CRC test failed:\n"
                         f"  Message: {hex_msg}\n"
-                        f"  Message without CRC: {msg_without_crc}\n"
-                        f"  Expected CRC: {expected_crc}\n"
-                        f"  Computed CRC: {computed_crc}\n"
-                        f"  Expected valid: {expected_valid}\n"
-                        f"  Got valid: {is_valid}"
+                        f"  PyModeS validation: {pms_valid}\n"
+                        f"  Our validation: {is_valid}\n"
+                        f"  Expected valid: {expected_valid}"
                     )
                     return False
 
