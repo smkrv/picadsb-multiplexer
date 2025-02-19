@@ -118,6 +118,11 @@ class CRC24:
     INIT = 0xFFFFFF
 
     @staticmethod
+    def print_binary(value: int, width: int = 24) -> str:
+        """Format integer as binary string with given width."""
+        return format(value, f'0{width}b')
+
+    @staticmethod
     def compute(data: bytes, debug: bool = False) -> bytes:
         crc = CRC24.INIT
 
@@ -161,28 +166,35 @@ class CRC24:
                 if debug:
                     print(f"    Bit {bit}: {old_crc:06X} -> {crc:06X}")
 
-        # Reverse bits in each byte of the final CRC
-        final_bytes = crc.to_bytes(3, 'big')
-        result = 0
-
-        for byte in final_bytes:
-            reversed_byte = 0
-            for j in range(8):
-                if byte & (1 << j):
-                    reversed_byte |= 1 << (7 - j)
-            result = (result << 8) | reversed_byte
+        # Reverse the entire CRC
+        reversed_crc = 0
+        for i in range(24):
+            if crc & (1 << i):
+                reversed_crc |= 1 << (23 - i)
 
         if debug:
             print(f"\nFinal CRC before reversal: {crc:06X}")
-            print(f"Final CRC after reversal: {result:06X}")
+            print(f"Binary before reversal: {CRC24.print_binary(crc)}")
+            print(f"Final CRC after reversal: {reversed_crc:06X}")
+            print(f"Binary after reversal:  {CRC24.print_binary(reversed_crc)}")
 
-        return result.to_bytes(3, 'big')
+        # Convert to bytes in big-endian order
+        return reversed_crc.to_bytes(3, 'big')
 
     @staticmethod
     def verify(message: bytes, expected_crc: bytes) -> bool:
         """Verify message CRC."""
         computed = CRC24.compute(message[:-3])
         return computed == expected_crc
+
+    @staticmethod
+    def reverse_bits(value: int, width: int) -> int:
+        """Reverse bits in an integer."""
+        result = 0
+        for i in range(width):
+            if value & (1 << i):
+                result |= 1 << (width - 1 - i)
+        return result
 
 class PicADSBMultiplexer:
     """Main multiplexer class that handles device communication and client connections."""
