@@ -131,34 +131,40 @@ class CRC24:
             if debug:
                 print(f"Byte {i}: {byte:02X}")
 
-            # Remove parity bit and reverse remaining 7 bits
+            # Remove parity bit
             byte_no_parity = (byte & 0xFE) >> 1
-            reversed_byte = int(f'{byte_no_parity:07b}'[::-1], 2)
+
+            # Reverse the 7 bits
+            reversed_byte = int(format(byte_no_parity, '07b')[::-1], 2)
 
             if debug:
-                print(f"  After parity removal (0xFE >> 1): {byte_no_parity:02X} ({byte_no_parity:07b})")
-                print(f"  After 7-bit reversal: {reversed_byte:02X} ({reversed_byte:07b})")
+                print(f"  After parity removal (0xFE >> 1): {byte_no_parity:02X} ({bin(byte_no_parity)[2:]:>07})")
+                print(f"  After 7-bit reversal: {reversed_byte:02X} ({bin(reversed_byte)[2:]:>07})")
 
+            # XOR the byte into the MSB of the CRC
             crc ^= (reversed_byte << 16)
 
             if debug:
                 print(f"  After XOR with shifted byte: {crc:06X}")
 
+            # Process each bit
             for bit in range(7):
+                old_crc = crc
                 if crc & 0x800000:
                     crc = ((crc << 1) ^ CRC24.POLYNOMIAL) & 0xFFFFFF
                 else:
                     crc = (crc << 1) & 0xFFFFFF
 
                 if debug:
-                    print(f"    Bit {bit}: {crc:06X}")
+                    print(f"    Bit {bit}: {old_crc:06X} -> {crc:06X}")
 
-        # Final bit reversal of each byte
-        final_crc = int.from_bytes(crc.to_bytes(3, 'big'), 'big')
+        # Reverse bits in each byte of final CRC
+        final_bytes = crc.to_bytes(3, 'big')
         result = 0
-        for i in range(24):
-            if final_crc & (1 << i):
-                result |= 1 << (23 - i)
+        for byte in final_bytes:
+            # Reverse bits in byte
+            byte = int(format(byte, '08b')[::-1], 2)
+            result = (result << 8) | byte
 
         return result.to_bytes(3, 'big')
 
@@ -1199,46 +1205,25 @@ class PicADSBMultiplexer:
         self.running = False
 
     def self_test(self):
-        """Perform self-test with detailed diagnostics."""
-        self.logger.info("Performing self-test...")
+        """Perform self-test with multiple test vectors."""
+        test_vectors = [
+            (0x33, "0012ED141C6B", "8D406B902015A678D4D2200AA728", "4F3E5D"),
+        ]
 
-        try:
-            test_vectors = [
-                (0x33, "0012ED141C6B", "8D406B902015A678D4D2200AA728", "4F3E5D")
-            ]
+        for msg_type, ts, data, expected_crc in test_vectors:
+            msg = bytes([msg_type]) + bytes.fromhex(ts) + bytes.fromhex(data)
+            computed_crc = self.compute(msg, debug=True).hex().upper()
 
-            for msg_type, ts, data, expected in test_vectors:
-                # Construct test message
-                msg = bytes([msg_type]) + bytes.fromhex(ts) + bytes.fromhex(data)
+            if computed_crc != expected_crc:
+                self.logger.error(
+                    f"CRC mismatch:\n"
+                    f"Input: {msg.hex().upper()}\n"
+                    f"Expected: {expected_crc}\n"
+                    f"Computed: {computed_crc}"
+                )
+                return False
 
-                self.logger.debug(f"""
-        Test vector details:
-          Message type: 0x{msg_type:02X}
-          Timestamp: {ts}
-          Data: {data}
-          Full message: {msg.hex().upper()}
-          Expected CRC: {expected}
-                """)
-
-                # Compute CRC with debug output
-                crc = CRC24.compute(msg, debug=True).hex().upper()
-
-                self.logger.debug(f"Computed CRC: {crc}")
-
-                if crc != expected:
-                    raise ValueError(
-                        f"CRC mismatch:\n"
-                        f"Input: {msg.hex().upper()}\n"
-                        f"Expected CRC: {expected}\n"
-                        f"Computed CRC: {crc}"
-                    )
-
-            self.logger.info("Self-test passed successfully ✓")
-            return True
-
-        except Exception as e:
-            self.logger.error(f"Self-test failed: {e}")
-            return False
+        return True
 
     def run(self):
         """Main operation loop."""
