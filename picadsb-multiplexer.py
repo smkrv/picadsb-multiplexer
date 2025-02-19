@@ -112,11 +112,12 @@ class TimestampGenerator:
 
 class CRC24:
     """
-    Finalized CRC-24 implementation for ADS-B/Mode-S with fixes:
-    1. Correct parity bit removal without shift
-    2. Proper 7-bit reversal
-    3. Fixed byte order in result
-    4. Proper bit positioning in CRC register
+    Final corrected CRC-24 implementation for ADS-B/Mode-S messages.
+    Features:
+    - Proper parity bit removal
+    - Correct 7-bit reversal
+    - Proper bit positioning
+    - Correct byte ordering in result
     """
     POLYNOMIAL = 0x1FFF409  # ICAO Annex 10 polynomial
     INIT = 0xFFFFFF        # Initial value
@@ -131,7 +132,7 @@ class CRC24:
             debug: Enable debug output
 
         Returns:
-            3-byte CRC value
+            3-byte CRC value in correct byte order
         """
         crc = CRC24.INIT
 
@@ -142,43 +143,42 @@ class CRC24:
             print("Processing bytes:")
 
         for i, byte in enumerate(data):
-            # Remove parity bit and reverse bits
+            # Remove parity bit and reverse 7 bits
             original_byte = byte
-            byte = (byte & 0xFE) >> 1  # Remove parity and shift right
-            reversed_bits = int(f"{byte:07b}"[::-1], 2)  # Reverse 7 bits
+            cleaned = (byte & 0xFE) >> 1
+            reversed_byte = int(f"{cleaned:07b}"[::-1], 2)
 
             if debug:
                 print(f"\nByte {i}: {original_byte:02X}")
-                print(f"  After parity removal: {byte:02X} ({byte:07b})")
-                print(f"  After 7-bit reversal: {reversed_bits:02X} ({reversed_bits:07b})")
+                print(f"  After parity removal (0xFE >> 1): {cleaned:02X} ({cleaned:07b})")
+                print(f"  After 7-bit reversal: {reversed_byte:02X} ({reversed_byte:07b})")
 
-            crc ^= (reversed_bits << 17)  # Position 7 bits correctly
+            # Update CRC
+            crc ^= reversed_byte << 17
 
             if debug:
                 print(f"  After XOR with shifted byte: {crc:06X}")
 
-            for bit in range(7):  # Process 7 bits instead of 8
+            # Process 7 bits
+            for bit in range(7):
                 old_crc = crc
-                if crc & 0x800000:
-                    crc = (crc << 1) ^ CRC24.POLYNOMIAL
-                else:
-                    crc <<= 1
+                crc = (crc << 1) ^ (CRC24.POLYNOMIAL if crc & 0x800000 else 0)
                 crc &= 0xFFFFFF
 
                 if debug:
                     print(f"    Bit {bit}: {old_crc:06X} -> {crc:06X} " +
                           ("(XOR)" if old_crc & 0x800000 else "(shift)"))
 
-        # Final bit reversal and byte ordering
-        final_crc = int(f"{crc:024b}"[::-1], 2)
+        # Reverse all bits and reorder bytes
+        reversed_crc = int(f"{crc:024b}"[::-1], 2)
 
         if debug:
             print(f"\nFinal CRC before bit reversal: {crc:06X}")
-            print(f"After 24-bit reversal: {final_crc:06X}")
-            result = final_crc.to_bytes(3, 'big')
-            print(f"Final CRC: {result.hex().upper()}")
+            print(f"After 24-bit reversal: {reversed_crc:06X}")
+            result = reversed_crc.to_bytes(3, 'little')
+            print(f"Final CRC (little-endian): {result.hex().upper()}")
 
-        return final_crc.to_bytes(3, 'big')
+        return reversed_crc.to_bytes(3, 'little')
 
     @staticmethod
     def verify(message: bytes, expected_crc: bytes) -> bool:
