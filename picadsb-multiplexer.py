@@ -112,10 +112,10 @@ class TimestampGenerator:
 
 class CRC24:
     """
-    Final corrected CRC-24 implementation for ADS-B/Mode-S messages.
+    CRC-24 implementation for ADS-B/Mode-S messages.
     """
-    POLYNOMIAL = 0x1864CFB
-    INIT = 0x000000
+    POLYNOMIAL = 0x1FFF409
+    INIT = 0xFFFFFF
 
     @staticmethod
     def compute(data: bytes, debug: bool = False) -> bytes:
@@ -124,42 +124,43 @@ class CRC24:
         if debug:
             print(f"Initial CRC: {crc:06X}")
             print(f"Input data: {data.hex().upper()}")
-            print(f"Polynomial: {CRC24.POLYNOMIAL:06X}")
-            print("Processing bytes:")
+            print(f"Polynomial: {CRC24.POLYNOMIAL:X}")
+            print("Processing bytes:\n")
 
         for i, byte in enumerate(data):
             if debug:
-                print(f"\nByte {i}: {byte:02X}")
+                print(f"Byte {i}: {byte:02X}")
 
-            crc ^= byte << 16
+            # Remove parity bit and reverse remaining 7 bits
+            byte_no_parity = (byte & 0xFE) >> 1
+            reversed_byte = int(f'{byte_no_parity:07b}'[::-1], 2)
+
+            if debug:
+                print(f"  After parity removal (0xFE >> 1): {byte_no_parity:02X} ({byte_no_parity:07b})")
+                print(f"  After 7-bit reversal: {reversed_byte:02X} ({reversed_byte:07b})")
+
+            crc ^= (reversed_byte << 16)
 
             if debug:
                 print(f"  After XOR with shifted byte: {crc:06X}")
 
-            for bit in range(8):
-                old_crc = crc
+            for bit in range(7):
                 if crc & 0x800000:
                     crc = ((crc << 1) ^ CRC24.POLYNOMIAL) & 0xFFFFFF
                 else:
                     crc = (crc << 1) & 0xFFFFFF
 
                 if debug:
-                    print(f"    Bit {bit}: {old_crc:06X} -> {crc:06X} " +
-                          ("(XOR)" if old_crc & 0x800000 else "(shift)"))
+                    print(f"    Bit {bit}: {crc:06X}")
 
-        crc = crc & 0xFFFFFF
+        # Final bit reversal of each byte
+        final_crc = int.from_bytes(crc.to_bytes(3, 'big'), 'big')
+        result = 0
+        for i in range(24):
+            if final_crc & (1 << i):
+                result |= 1 << (23 - i)
 
-        if debug:
-            print(f"\nFinal CRC: {crc:06X}")
-            print(f"After byte-wise bit reversal: {crc.to_bytes(3, 'big').hex().upper()}")
-
-        return crc.to_bytes(3, 'big')
-
-    @staticmethod
-    def verify(message: bytes, expected_crc: bytes) -> bool:
-        """Verify message CRC."""
-        computed = CRC24.compute(message)
-        return computed == expected_crc
+        return result.to_bytes(3, 'big')
 
 class PicADSBMultiplexer:
     """Main multiplexer class that handles device communication and client connections."""
