@@ -114,8 +114,8 @@ class CRC24:
     """
     Final corrected CRC-24 implementation for ADS-B/Mode-S messages.
     """
-    POLYNOMIAL = 0x1FFF409
-    INIT = 0xFFFFFF
+    POLYNOMIAL = 0x1864CFB
+    INIT = 0x000000
 
     @staticmethod
     def compute(data: bytes, debug: bool = False) -> bytes:
@@ -128,24 +128,15 @@ class CRC24:
             print("Processing bytes:")
 
         for i, byte in enumerate(data):
-            # Remove parity bit and reverse 7 bits
-            original_byte = byte
-            cleaned = (byte & 0xFE) >> 1  # Remove parity bit
-            reversed_byte = int(f"{cleaned:07b}"[::-1], 2)  # Reverse 7 bits
-
             if debug:
-                print(f"\nByte {i}: {original_byte:02X}")
-                print(f"  After parity removal (0xFE >> 1): {cleaned:02X} ({cleaned:07b})")
-                print(f"  After 7-bit reversal: {reversed_byte:02X} ({reversed_byte:07b})")
+                print(f"\nByte {i}: {byte:02X}")
 
-            # Update CRC
-            crc ^= reversed_byte << 17
+            crc ^= byte << 16
 
             if debug:
                 print(f"  After XOR with shifted byte: {crc:06X}")
 
-            # Process 7 bits
-            for bit in range(7):
+            for bit in range(8):
                 old_crc = crc
                 if crc & 0x800000:
                     crc = ((crc << 1) ^ CRC24.POLYNOMIAL) & 0xFFFFFF
@@ -156,17 +147,13 @@ class CRC24:
                     print(f"    Bit {bit}: {old_crc:06X} -> {crc:06X} " +
                           ("(XOR)" if old_crc & 0x800000 else "(shift)"))
 
-        # Final transformations
         crc = crc & 0xFFFFFF
-        # Reverse bits in each byte separately and swap byte order
-        crc_bytes = crc.to_bytes(3, 'big')
-        reversed_bytes = bytes(int(f"{b:08b}"[::-1], 2) for b in crc_bytes)
 
         if debug:
             print(f"\nFinal CRC: {crc:06X}")
-            print(f"After byte-wise bit reversal: {reversed_bytes.hex().upper()}")
+            print(f"After byte-wise bit reversal: {crc.to_bytes(3, 'big').hex().upper()}")
 
-        return reversed_bytes
+        return crc.to_bytes(3, 'big')
 
     @staticmethod
     def verify(message: bytes, expected_crc: bytes) -> bool:
@@ -1224,12 +1211,12 @@ class PicADSBMultiplexer:
                 msg = bytes([msg_type]) + bytes.fromhex(ts) + bytes.fromhex(data)
 
                 self.logger.debug(f"""
-    Test vector details:
-      Message type: 0x{msg_type:02X}
-      Timestamp: {ts}
-      Data: {data}
-      Full message: {msg.hex().upper()}
-      Expected CRC: {expected}
+        Test vector details:
+          Message type: 0x{msg_type:02X}
+          Timestamp: {ts}
+          Data: {data}
+          Full message: {msg.hex().upper()}
+          Expected CRC: {expected}
                 """)
 
                 # Compute CRC with debug output
