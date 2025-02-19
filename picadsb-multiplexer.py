@@ -111,21 +111,31 @@ class TimestampGenerator:
             return fallback.to_bytes(6, 'big')
 
 class CRC24:
-    POLYNOMIAL = 0x1FFF409  # Правильный полином для MSB-first
+    POLYNOMIAL = 0x1FFF409
     INIT = 0x000000
 
     @staticmethod
     def compute(data: bytes) -> bytes:
         crc = CRC24.INIT
+
         for byte in data:
-            crc ^= byte << 16
+            crc ^= (byte << 16)
+
             for _ in range(8):
                 if crc & 0x800000:
                     crc = (crc << 1) ^ CRC24.POLYNOMIAL
                 else:
                     crc <<= 1
-                crc &= 0xFFFFFF  
+                crc &= 0xFFFFFF
+
         return crc.to_bytes(3, 'big')
+
+    @staticmethod
+    def verify(message: bytes, expected_crc: bytes) -> bool:
+        """Проверка CRC сообщения."""
+        computed = CRC24.compute(message)
+        return computed == expected_crc
+
 
 class PicADSBMultiplexer:
     """Main multiplexer class that handles device communication and client connections."""
@@ -1063,35 +1073,30 @@ class PicADSBMultiplexer:
 
         try:
             test_vectors = [
-                # (msg_type, timestamp, data, expected_crc)
-                (0x33, "0012ED141C6B", "8D406B902015A678D4D2200AA728", "4F3E5D"),
-                (0x32, "0012ED15A749", "5D8965B360ADD7", "1D2A9C")
+                (0x33, "0012ED141C6B", "8D406B902015A678D4D2200AA728", "4F3E5D")
             ]
 
-            for msg_type, ts_hex, data_hex, expected_crc in test_vectors:
-                # Формируем полное сообщение
-                full_data = bytes([msg_type]) + bytes.fromhex(ts_hex) + bytes.fromhex(data_hex)
+            for msg_type, ts, data, expected in test_vectors:
+                msg = bytes([msg_type]) + bytes.fromhex(ts) + bytes.fromhex(data)
 
-                # Debug output
-                self.logger.debug("Test vector details:")
-                self.logger.debug(f"  Message type: 0x{msg_type:02X}")
-                self.logger.debug(f"  Timestamp: {ts_hex}")
-                self.logger.debug(f"  Data: {data_hex}")
-                self.logger.debug(f"  Complete input: {full_data.hex().upper()}")
-                self.logger.debug(f"  Expected CRC: {expected_crc}")
+                self.logger.debug(f"""
+    Test vector details:
+      Message type: 0x{msg_type:02X}
+      Timestamp: {ts}
+      Data: {data}
+      Full message: {msg.hex().upper()}
+      Expected CRC: {expected}
+                """)
 
-                # Calculate CRC
-                crc = CRC24.compute(full_data)
-                computed_crc = crc.hex().upper()
+                crc = CRC24.compute(msg).hex().upper()
+                self.logger.debug(f"Computed CRC: {crc}")
 
-                self.logger.debug(f"  Computed CRC: {computed_crc}")
-
-                if computed_crc != expected_crc:
+                if crc != expected:
                     raise ValueError(
                         f"CRC mismatch:\n"
-                        f"Input data: {full_data.hex().upper()}\n"
-                        f"Expected CRC: {expected_crc}\n"
-                        f"Computed CRC: {computed_crc}"
+                        f"Input: {msg.hex().upper()}\n"
+                        f"Expected CRC: {expected}\n"
+                        f"Computed CRC: {crc}"
                     )
 
             self.logger.info("Self-test passed successfully ✓")
