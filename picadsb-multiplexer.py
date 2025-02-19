@@ -36,10 +36,9 @@ import sys
 import time
 import os
 import signal
-import pyModeS
+import pyModeS.common
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List, Tuple
-from pyModeS import crc
 
 class BeastFormat:
     """
@@ -129,42 +128,72 @@ class CRC24:
         Returns:
             3-byte CRC value
         """
+        logger = logging.getLogger('PicADSB.CRC')
+
+        if not data:
+            logger.error("Empty data provided for CRC computation")
+            return b'\x00\x00\x00'
+
         try:
             if debug:
-                logging.getLogger('PicADSB.CRC').debug(f"Computing CRC for: {data.hex().upper()}")
+                logger.debug(f"Computing CRC for: {data.hex().upper()}")
 
-            # Use pyModeS crc24 function
-            crc_int = pyModeS.crc.crc24(data)
-            crc_bytes = crc_int.to_bytes(3, 'big')
+            # Convert bytes to hex string for pyModeS
+            hex_data = data.hex().upper()
+
+            # Calculate CRC using pyModeS
+            crc_hex = pyModeS.common.calc_crc(hex_data)
+
+            # Convert back to bytes
+            crc_bytes = bytes.fromhex(crc_hex)
+
+            if len(crc_bytes) != 3:
+                logger.error(f"Invalid CRC length: {len(crc_bytes)}")
+                return b'\x00\x00\x00'
 
             if debug:
-                logging.getLogger('PicADSB.CRC').debug(f"Computed CRC: {crc_bytes.hex().upper()}")
+                logger.debug(f"Computed CRC: {crc_bytes.hex().upper()}")
 
             return crc_bytes
 
+        except ValueError as e:
+            logger.error(f"Invalid hex data: {e}")
+            return b'\x00\x00\x00'
         except Exception as e:
-            logging.getLogger('PicADSB.CRC').error(f"CRC computation error: {e}")
+            logger.error(f"CRC computation error: {str(e)}")
             return b'\x00\x00\x00'
 
     @staticmethod
-    def verify(message: bytes, expected_crc: bytes) -> bool:
+    def verify(message: bytes, expected_crc: bytes, debug: bool = False) -> bool:
         """
         Verify message CRC against expected value.
 
         Args:
             message: Message bytes without CRC
             expected_crc: Expected 3-byte CRC value
+            debug: Enable debug logging
 
         Returns:
             True if CRC matches, False otherwise
         """
+        logger = logging.getLogger('PicADSB.CRC')
+
+        if len(expected_crc) != 3:
+            logger.error(f"Invalid expected CRC length: {len(expected_crc)}")
+            return False
+
         try:
             # Compute CRC for message without CRC bytes
-            computed = CRC24.compute(message[:-3])
+            computed = CRC24.compute(message[:-3], debug=debug)
+
+            if debug:
+                logger.debug(f"Comparing CRCs - Computed: {computed.hex().upper()}, Expected: {expected_crc.hex().upper()}")
+
             return computed == expected_crc
+
         except Exception as e:
-            logging.getLogger('PicADSB.CRC').error(f"CRC verification error: {e}")
-            return False
+            logger.error(f"CRC verification error: {str(e)}")
+            return False  
 
 class PicADSBMultiplexer:
     """Main multiplexer class that handles device communication and client connections."""
