@@ -131,23 +131,23 @@ class CRC24:
             if debug:
                 print(f"Byte {i}: {byte:02X}")
 
-            # Remove parity bit
+            # Remove parity bit and get 7 bits
             byte_no_parity = (byte & 0xFE) >> 1
 
             # Reverse the 7 bits
-            reversed_byte = int(format(byte_no_parity, '07b')[::-1], 2)
+            reversed_byte = int(''.join(str((byte_no_parity >> i) & 1) for i in range(7))[::-1], 2)
 
             if debug:
-                print(f"  After parity removal (0xFE >> 1): {byte_no_parity:02X} ({bin(byte_no_parity)[2:]:>07})")
-                print(f"  After 7-bit reversal: {reversed_byte:02X} ({bin(reversed_byte)[2:]:>07})")
+                print(f"  After parity removal (0xFE >> 1): {byte_no_parity:02X} ({format(byte_no_parity, '07b')})")
+                print(f"  After 7-bit reversal: {reversed_byte:02X} ({format(reversed_byte, '07b')})")
 
-            # XOR the byte into the MSB of the CRC
+            # XOR in the byte
             crc ^= (reversed_byte << 16)
 
             if debug:
                 print(f"  After XOR with shifted byte: {crc:06X}")
 
-            # Process each bit
+            # Process 7 bits
             for bit in range(7):
                 old_crc = crc
                 if crc & 0x800000:
@@ -158,13 +158,17 @@ class CRC24:
                 if debug:
                     print(f"    Bit {bit}: {old_crc:06X} -> {crc:06X}")
 
-        # Reverse bits in each byte of final CRC
-        final_bytes = crc.to_bytes(3, 'big')
+        # Final bit reversal for each byte of the CRC
         result = 0
-        for byte in final_bytes:
+        for i in range(3):
+            byte = (crc >> ((2 - i) * 8)) & 0xFF
             # Reverse bits in byte
-            byte = int(format(byte, '08b')[::-1], 2)
-            result = (result << 8) | byte
+            reversed_byte = int(''.join(str((byte >> j) & 1) for j in range(8))[::-1], 2)
+            result = (result << 8) | reversed_byte
+
+        if debug:
+            print(f"\nFinal CRC before reversal: {crc:06X}")
+            print(f"Final CRC after reversal: {result:06X}")
 
         return result.to_bytes(3, 'big')
 
