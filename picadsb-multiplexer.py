@@ -198,34 +198,48 @@ class PicADSBMultiplexer:
     KEEPALIVE_MARKER = b'\n'
 
     def _setup_logging(self, log_level: str):
-        """Configure logging with both file and console output."""
+        """
+        Configure logging with unified format for both file and console output.
+
+        Args:
+            log_level: Logging level (DEBUG, INFO, WARNING, ERROR)
+        """
         numeric_level = getattr(logging, log_level.upper(), None)
         if not isinstance(numeric_level, int):
             raise ValueError(f'Invalid log level: {log_level}')
 
+        # Create logger
         self.logger = logging.getLogger('PicADSB')
         self.logger.setLevel(numeric_level)
 
-        os.makedirs('logs', exist_ok=True)
+        # Remove any existing handlers
+        self.logger.handlers = []
 
+        # Create formatter
+        formatter = logging.Formatter(
+            '%(asctime)s.%(msecs)03d - %(levelname)s - %(message)s',
+            '%Y-%m-%d %H:%M:%S'
+        )
+
+        # File handler
+        os.makedirs('logs', exist_ok=True)
         fh = logging.FileHandler(
             f'logs/picadsb_{datetime.now():%Y%m%d_%H%M%S}.log'
         )
         fh.setLevel(logging.DEBUG)
-        fh.setFormatter(logging.Formatter(
-            '%(asctime)s.%(msecs)03d - %(name)s - %(levelname)s - %(message)s',
-            '%Y-%m-%d %H:%M:%S'
-        ))
+        fh.setFormatter(formatter)
 
-        ch_err = logging.StreamHandler(sys.stderr)
-        ch_err.setLevel(numeric_level)
-        ch_err.setFormatter(logging.Formatter(
-            '%(asctime)s.%(msecs)03d - %(levelname)s - %(message)s',
-            '%Y-%m-%d %H:%M:%S'
-        ))
+        # Console handler
+        ch = logging.StreamHandler(sys.stderr)
+        ch.setLevel(numeric_level)
+        ch.setFormatter(formatter)
 
+        # Add handlers
         self.logger.addHandler(fh)
-        self.logger.addHandler(ch_err)
+        self.logger.addHandler(ch)
+
+        # Prevent log propagation to avoid duplicate messages
+        self.logger.propagate = False
 
     def __init__(self, tcp_port: int = 30002, serial_port: str = '/dev/ttyACM0',
                  log_level: str = 'INFO', skip_init: bool = False,
@@ -1226,11 +1240,11 @@ class PicADSBMultiplexer:
             True if all tests pass, False otherwise
         """
         test_vectors = [
-            # Real ADS-B messages with valid CRC
-            ("8D152000004F90000000002D82E0", True),
-            ("A00009B9FD39F31EFE5FCF114E6E", True),
-            ("A8001213801FF72420049259ED27", True),
-            ("A0000914803FD123600C90891522", True),
+            # Known valid ADS-B messages with correct CRC
+            ("8D152000004F90000000002D82E0", True),  # Valid DF17 message
+            ("8D4840D6202CC371C32CE0576098", True),  # Valid position message
+            ("8D4B1A00EA0DC492C5C2C1AD6B08", True),  # Valid velocity message
+            ("8D4CA4E5EA0B8C00000000D891D4", True),  # Valid identification message
         ]
 
         self.logger.info("Running CRC self-test...")
@@ -1241,27 +1255,24 @@ class PicADSBMultiplexer:
 
                 # Verify using pyModeS directly
                 pms_valid = pms.common.crc(hex_msg) == 0
-                self.logger.debug(f"PyModeS direct validation: {pms_valid}")
+                self.logger.debug(f"CRC validation result: {pms_valid}")
 
                 # Convert hex to bytes for our verification
                 msg_bytes = bytes.fromhex(hex_msg)
-                our_valid = CRC24.verify(msg_bytes, debug=True)
+                our_valid = CRC24.verify(msg_bytes)
 
                 if pms_valid != expected_valid:
                     self.logger.error(
-                        f"CRC test failed:\n"
-                        f"  Message: {hex_msg}\n"
+                        f"CRC test failed for {hex_msg}:\n"
                         f"  PyModeS validation: {pms_valid}\n"
-                        f"  Our validation: {our_valid}\n"
                         f"  Expected valid: {expected_valid}"
                     )
                     return False
 
-                self.logger.debug(f"CRC test passed: {hex_msg}")
+                self.logger.debug(f"Test passed for message: {hex_msg}")
 
             except Exception as e:
-                self.logger.error(f"Test error for message {hex_msg}: {e}")
-                self.logger.error(f"Exception details:", exc_info=True)
+                self.logger.error(f"Test error for {hex_msg}: {e}")
                 return False
 
         self.logger.info("All CRC tests passed successfully")
