@@ -111,31 +111,57 @@ class TimestampGenerator:
             return fallback.to_bytes(6, 'big')
 
 class CRC24:
-    POLYNOMIAL = 0x1FFF409
-    INIT = 0x000000
+    """
+    CRC-24 implementation for Mode-S/ADS-B messages.
+    """
+    POLYNOMIAL = 0x864CFB  # Correct polynomial for Mode-S
+    INIT = 0xFFFFFF       # Initial value
 
     @staticmethod
-    def compute(data: bytes) -> bytes:
+    def compute(data: bytes, debug: bool = False) -> bytes:
+        """
+        Compute CRC-24 for given data.
+
+        Args:
+            data: Input bytes
+            debug: Enable debug output
+
+        Returns:
+            3-byte CRC value
+        """
         crc = CRC24.INIT
 
-        for byte in data:
+        if debug:
+            print(f"Initial CRC: {crc:06X}")
+            print(f"Input data: {data.hex().upper()}")
+            print("Processing bytes:")
+
+        for i, byte in enumerate(data):
             crc ^= (byte << 16)
 
-            for _ in range(8):
+            if debug:
+                print(f"\nByte {i}: {byte:02X}")
+                print(f"After XOR: {crc:06X}")
+
+            for bit in range(8):
                 if crc & 0x800000:
-                    crc = (crc << 1) ^ CRC24.POLYNOMIAL
+                    crc = ((crc << 1) ^ CRC24.POLYNOMIAL) & 0xFFFFFF
                 else:
-                    crc <<= 1
-                crc &= 0xFFFFFF
+                    crc = (crc << 1) & 0xFFFFFF
+
+                if debug:
+                    print(f"  Bit {bit}: {crc:06X}")
+
+        if debug:
+            print(f"\nFinal CRC: {crc:06X}")
 
         return crc.to_bytes(3, 'big')
 
     @staticmethod
     def verify(message: bytes, expected_crc: bytes) -> bool:
-        """Проверка CRC сообщения."""
+        """Verify message CRC."""
         computed = CRC24.compute(message)
         return computed == expected_crc
-
 
 class PicADSBMultiplexer:
     """Main multiplexer class that handles device communication and client connections."""
@@ -1068,7 +1094,7 @@ class PicADSBMultiplexer:
             raise ValueError(f"Invalid short message length: {len(data)}")
 
     def self_test(self):
-        """Perform self-test with complete Beast message validation."""
+        """Perform self-test with detailed diagnostics."""
         self.logger.info("Performing self-test...")
 
         try:
@@ -1077,6 +1103,7 @@ class PicADSBMultiplexer:
             ]
 
             for msg_type, ts, data, expected in test_vectors:
+                # Construct test message
                 msg = bytes([msg_type]) + bytes.fromhex(ts) + bytes.fromhex(data)
 
                 self.logger.debug(f"""
@@ -1088,7 +1115,9 @@ class PicADSBMultiplexer:
       Expected CRC: {expected}
                 """)
 
-                crc = CRC24.compute(msg).hex().upper()
+                # Compute CRC with debug output
+                crc = CRC24.compute(msg, debug=True).hex().upper()
+
                 self.logger.debug(f"Computed CRC: {crc}")
 
                 if crc != expected:
