@@ -112,15 +112,26 @@ class TimestampGenerator:
 
 class CRC24:
     """
-    Mode-S CRC-24 implementation according to ICAO Annex 10.
+    Mode-S CRC-24 implementation with LSB-first bit order.
+    Polynomial: 0x1FFF409 (Mode-S specific)
     """
-    def __init__(self):
-        self.crc = 0
+    _POLY = 0x1FFF409  # Correct polynomial for Mode-S (LSB-first)
+    _TABLE = [0] * 256
+
+    # Generate lookup table with reversed bit order
+    for byte in range(256):
+        remainder = byte
+        for _ in range(8):
+            if remainder & 1:
+                remainder = (remainder >> 1) ^ _POLY
+            else:
+                remainder >>= 1
+        _TABLE[byte] = remainder & 0xFFFFFF
 
     @staticmethod
     def compute(data: bytes) -> bytes:
         """
-        Compute CRC-24 for Mode-S message.
+        Compute CRC-24 with LSB-first processing.
 
         Args:
             data: Raw Mode-S message bytes
@@ -128,17 +139,10 @@ class CRC24:
         Returns:
             3-byte CRC value in big-endian order
         """
-        GENERATOR = 0xFFF409
         crc = 0
-
         for byte in data:
-            crc ^= (byte << 16)
-            for _ in range(8):
-                if crc & 0x800000:
-                    crc = ((crc << 1) ^ GENERATOR) & 0xFFFFFF
-                else:
-                    crc = (crc << 1) & 0xFFFFFF
-
+            crc = (crc >> 8) ^ CRC24._TABLE[(crc ^ byte) & 0xFF]
+            crc &= 0xFFFFFF
         return crc.to_bytes(3, 'big')
 
     @staticmethod
@@ -1103,17 +1107,24 @@ class PicADSBMultiplexer:
             test_vectors = [
                 ("8D406B902015A678D4D2200AA728", "4F3E5D", BeastFormat.TYPE_MODES_LONG),
                 ("5D8965B360ADD7", "1D2A9C", BeastFormat.TYPE_MODES_SHORT),
-                ("5D8965B360ADDB", "00485A", BeastFormat.TYPE_MODES_SHORT)
+                ("8D4840D6202CC371C32CE0576098", "25B505", BeastFormat.TYPE_MODES_LONG)
             ]
 
             for hex_data, expected_crc, msg_type in test_vectors:
                 data = bytes.fromhex(hex_data)
 
-                # Подробный вывод для отладки
+                # Validate message length
+                if msg_type == BeastFormat.TYPE_MODES_LONG and len(data) != 14:
+                    raise ValueError(f"Invalid long message length: {len(data)}")
+                elif msg_type == BeastFormat.TYPE_MODES_SHORT and len(data) != 7:
+                    raise ValueError(f"Invalid short message length: {len(data)}")
+
+                # Detailed debug output
                 self.logger.debug(f"Test vector:")
                 self.logger.debug(f"  Data (hex): {hex_data}")
                 self.logger.debug(f"  Data (bytes): {' '.join(f'{b:02X}' for b in data)}")
                 self.logger.debug(f"  Length: {len(data)} bytes")
+                self.logger.debug(f"  Message type: 0x{msg_type:02X}")
                 self.logger.debug(f"  Expected CRC: {expected_crc}")
 
                 crc = CRC24.compute(data)
@@ -1128,7 +1139,7 @@ class PicADSBMultiplexer:
                         f"Got: {computed_crc_hex}"
                     )
 
-                # Проверка Beast-сообщения
+                # Test Beast message creation
                 beast_msg = self._create_beast_message(msg_type, data)
                 if not beast_msg:
                     raise ValueError(f"Failed to create Beast message for {hex_data}")
