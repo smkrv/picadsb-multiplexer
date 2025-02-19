@@ -112,19 +112,25 @@ class TimestampGenerator:
 
 class CRC24:
     """
-    CRC-24 implementation for Mode-S/ADS-B messages.
+    CRC-24 implementation for ADS-B/Mode-S messages.
+
+    Features:
+    - Uses ICAO Annex 10 polynomial 0x1FFF409
+    - Removes parity bit
+    - Proper initialization
+    - MSB-first processing
     """
-    POLYNOMIAL = 0x864CFB  # Correct polynomial for Mode-S
-    INIT = 0xFFFFFF       # Initial value
+    POLYNOMIAL = 0x1FFF409  # Original ICAO Annex 10 polynomial
+    INIT = 0xFFFFFF        # Initial value
 
     @staticmethod
     def compute(data: bytes, debug: bool = False) -> bytes:
         """
-        Compute CRC-24 for given data.
+        Compute CRC-24 with optional debug output.
 
         Args:
-            data: Input bytes
-            debug: Enable debug output
+            data: Input message bytes
+            debug: Enable detailed debug output
 
         Returns:
             3-byte CRC value
@@ -134,28 +140,39 @@ class CRC24:
         if debug:
             print(f"Initial CRC: {crc:06X}")
             print(f"Input data: {data.hex().upper()}")
+            print(f"Polynomial: {CRC24.POLYNOMIAL:06X}")
             print("Processing bytes:")
 
         for i, byte in enumerate(data):
+            # Remove parity bit
+            byte = byte & 0xFE
+
+            if debug:
+                print(f"\nByte {i}: {byte:02X} (original: {data[i]:02X}, parity removed)")
+
             crc ^= (byte << 16)
 
             if debug:
-                print(f"\nByte {i}: {byte:02X}")
-                print(f"After XOR: {crc:06X}")
+                print(f"After XOR with shifted byte: {crc:06X}")
 
             for bit in range(8):
+                old_crc = crc
                 if crc & 0x800000:
-                    crc = ((crc << 1) ^ CRC24.POLYNOMIAL) & 0xFFFFFF
+                    crc = (crc << 1) ^ CRC24.POLYNOMIAL
                 else:
-                    crc = (crc << 1) & 0xFFFFFF
+                    crc <<= 1
+                crc &= 0xFFFFFF  # Keep 24 bits
 
                 if debug:
-                    print(f"  Bit {bit}: {crc:06X}")
+                    print(f"  Bit {bit}: {old_crc:06X} -> {crc:06X} " +
+                          ("(XOR with polynomial)" if old_crc & 0x800000 else "(shift only)"))
 
         if debug:
-            print(f"\nFinal CRC: {crc:06X}")
+            print(f"\nFinal CRC before byte reversal: {crc:06X}")
+            result = crc.to_bytes(3, 'big')[::-1]
+            print(f"Final CRC after byte reversal: {result.hex().upper()}")
 
-        return crc.to_bytes(3, 'big')
+        return crc.to_bytes(3, 'big')[::-1]
 
     @staticmethod
     def verify(message: bytes, expected_crc: bytes) -> bool:
