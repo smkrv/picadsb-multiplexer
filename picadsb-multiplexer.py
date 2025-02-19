@@ -1206,24 +1206,42 @@ class PicADSBMultiplexer:
 
     def self_test(self):
         """Perform self-test with multiple test vectors."""
+        self.logger.info("Performing self-test...")
+
         test_vectors = [
             (0x33, "0012ED141C6B", "8D406B902015A678D4D2200AA728", "4F3E5D"),
         ]
 
-        for msg_type, ts, data, expected_crc in test_vectors:
-            msg = bytes([msg_type]) + bytes.fromhex(ts) + bytes.fromhex(data)
-            computed_crc = self.compute(msg, debug=True).hex().upper()
+        try:
+            for msg_type, ts, data, expected_crc in test_vectors:
+                msg = bytes([msg_type]) + bytes.fromhex(ts) + bytes.fromhex(data)
 
-            if computed_crc != expected_crc:
-                self.logger.error(
-                    f"CRC mismatch:\n"
-                    f"Input: {msg.hex().upper()}\n"
-                    f"Expected: {expected_crc}\n"
-                    f"Computed: {computed_crc}"
-                )
-                return False
+                self.logger.debug(f"""
+            Test vector details:
+              Message type: 0x{msg_type:02X}
+              Timestamp: {ts}
+              Data: {data}
+              Full message: {msg.hex().upper()}
+              Expected CRC: {expected_crc}
+                    """)
 
-        return True
+                computed_crc = CRC24.compute(msg, debug=True).hex().upper()
+
+                if computed_crc != expected_crc:
+                    raise ValueError(
+                        f"CRC mismatch:\n"
+                        f"Input: {msg.hex().upper()}\n"
+                        f"Expected CRC: {expected_crc}\n"
+                        f"Computed CRC: {computed_crc}"
+                    )
+
+            self.logger.info("Self-test passed successfully ✓")
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Self-test failed: {e}")
+            return False
+
 
     def run(self):
         """Main operation loop."""
