@@ -131,19 +131,17 @@ class CRC24:
             if debug:
                 print(f"Byte {i}: {byte:02X}")
 
-            # Remove parity bit
+            # Remove parity bit and get 7 bits
             byte_no_parity = (byte & 0xFE) >> 1
 
-            if debug:
-                print(f"  After parity removal (0xFE >> 1): {byte_no_parity:02X} ({format(byte_no_parity, '07b')})")
-
-            # XOR the byte into the MSB of the CRC
+            # XOR in the byte
             crc ^= (byte_no_parity << 16)
 
             if debug:
+                print(f"  After parity removal (0xFE >> 1): {byte_no_parity:02X} ({format(byte_no_parity, '07b')})")
                 print(f"  After XOR with shifted byte: {crc:06X}")
 
-            # Process each bit
+            # Process 7 bits
             for bit in range(7):
                 old_crc = crc
                 if crc & 0x800000:
@@ -154,22 +152,32 @@ class CRC24:
                 if debug:
                     print(f"    Bit {bit}: {old_crc:06X} -> {crc:06X}")
 
-        # Reverse bits in each byte of the final CRC
-        final_bytes = crc.to_bytes(3, 'big')
-        result = 0
+        # Reverse the bits in each byte separately
+        crc_bytes = crc.to_bytes(3, 'big')
+        result = bytearray()
 
-        # Reverse bits in each byte
-        for b in final_bytes:
-            reversed_byte = int(format(b, '08b')[::-1], 2)
-            result = (result << 8) | reversed_byte
+        for b in crc_bytes:
+            # Reverse bits in this byte
+            rev = 0
+            for i in range(8):
+                if b & (1 << i):
+                    rev |= 1 << (7 - i)
+            result.append(rev)
 
         if debug:
             print(f"\nFinal CRC before reversal: {crc:06X}")
             print(f"Binary before reversal: {format(crc, '024b')}")
-            print(f"Final CRC after reversal: {result:06X}")
-            print(f"Binary after reversal:  {format(result, '024b')}")
+            final_int = int.from_bytes(result, 'big')
+            print(f"Final CRC after reversal: {final_int:06X}")
+            print(f"Binary after reversal:  {format(final_int, '024b')}")
 
-        return result.to_bytes(3, 'big')
+        return bytes(result)
+
+    @staticmethod
+    def verify(message: bytes, expected_crc: bytes) -> bool:
+        """Verify message CRC."""
+        computed = CRC24.compute(message[:-3])
+        return computed == expected_crc
 
 class PicADSBMultiplexer:
     """Main multiplexer class that handles device communication and client connections."""
