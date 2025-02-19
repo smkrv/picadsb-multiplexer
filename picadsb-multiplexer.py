@@ -186,48 +186,6 @@ class CRC24:
         """Reverse bits in a byte."""
         return int(f"{byte:08b}"[::-1], 2)
 
-def self_test(self):
-    """Perform self-test with detailed diagnostics."""
-    self.logger.info("Performing self-test...")
-
-    try:
-        test_vectors = [
-            (0x33, "0012ED141C6B", "8D406B902015A678D4D2200AA728", "4F3E5D")
-        ]
-
-        for msg_type, ts, data, expected in test_vectors:
-            # Construct test message
-            msg = bytes([msg_type]) + bytes.fromhex(ts) + bytes.fromhex(data)
-
-            self.logger.debug(f"""
-Test vector details:
-  Message type: 0x{msg_type:02X}
-  Timestamp: {ts}
-  Data: {data}
-  Full message: {msg.hex().upper()}
-  Expected CRC: {expected}
-            """)
-
-            # Compute CRC with debug output
-            crc = CRC24.compute(msg, debug=True).hex().upper()
-
-            self.logger.debug(f"Computed CRC: {crc}")
-
-            if crc != expected:
-                raise ValueError(
-                    f"CRC mismatch:\n"
-                    f"Input: {msg.hex().upper()}\n"
-                    f"Expected CRC: {expected}\n"
-                    f"Computed CRC: {crc}"
-                )
-
-        self.logger.info("Self-test passed successfully ✓")
-        return True
-
-    except Exception as e:
-        self.logger.error(f"Self-test failed: {e}")
-        return False
-
 
 class PicADSBMultiplexer:
     """Main multiplexer class that handles device communication and client connections."""
@@ -1264,6 +1222,48 @@ class PicADSBMultiplexer:
         """Handle shutdown signals."""
         self.logger.info(f"Received signal {signum}, shutting down...")
         self.running = False
+
+    def self_test(self):
+        """Perform self-test with detailed diagnostics."""
+        self.logger.info("Performing self-test...")
+
+        try:
+            test_vectors = [
+                (0x33, "0012ED141C6B", "8D406B902015A678D4D2200AA728", "4F3E5D")
+            ]
+
+            for msg_type, ts, data, expected in test_vectors:
+                # Construct test message
+                msg = bytes([msg_type]) + bytes.fromhex(ts) + bytes.fromhex(data)
+
+                self.logger.debug(f"""
+    Test vector details:
+      Message type: 0x{msg_type:02X}
+      Timestamp: {ts}
+      Data: {data}
+      Full message: {msg.hex().upper()}
+      Expected CRC: {expected}
+                """)
+
+                # Compute CRC with debug output
+                crc = CRC24.compute(msg, debug=True).hex().upper()
+
+                self.logger.debug(f"Computed CRC: {crc}")
+
+                if crc != expected:
+                    raise ValueError(
+                        f"CRC mismatch:\n"
+                        f"Input: {msg.hex().upper()}\n"
+                        f"Expected CRC: {expected}\n"
+                        f"Computed CRC: {crc}"
+                    )
+
+            self.logger.info("Self-test passed successfully ✓")
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Self-test failed: {e}")
+            return False
 
     def run(self):
         """Main operation loop."""
