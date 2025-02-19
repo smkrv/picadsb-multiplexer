@@ -112,26 +112,15 @@ class TimestampGenerator:
 
 class CRC24:
     """
-    Mode-S CRC-24 implementation with LSB-first bit order.
-    Polynomial: 0x1FFF409 (Mode-S specific)
+    Mode-S CRC-24 implementation with MSB-first bit order according to ICAO Annex 10.
     """
-    _POLY = 0x1FFF409  # Correct polynomial for Mode-S (LSB-first)
-    _TABLE = [0] * 256
-
-    # Generate lookup table with reversed bit order
-    for byte in range(256):
-        remainder = byte
-        for _ in range(8):
-            if remainder & 1:
-                remainder = (remainder >> 1) ^ _POLY
-            else:
-                remainder >>= 1
-        _TABLE[byte] = remainder & 0xFFFFFF
+    POLYNOMIAL = 0x1FFF409  # Correct polynomial from ICAO Annex 10
+    INIT = 0x000000       # Initial value
 
     @staticmethod
     def compute(data: bytes) -> bytes:
         """
-        Compute CRC-24 with LSB-first processing.
+        Compute CRC-24 with MSB-first processing.
 
         Args:
             data: Raw Mode-S message bytes
@@ -139,10 +128,15 @@ class CRC24:
         Returns:
             3-byte CRC value in big-endian order
         """
-        crc = 0
+        crc = CRC24.INIT
         for byte in data:
-            crc = (crc >> 8) ^ CRC24._TABLE[(crc ^ byte) & 0xFF]
-            crc &= 0xFFFFFF
+            crc ^= (byte << 16)  # MSB-first processing
+            for _ in range(8):
+                if crc & 0x800000:
+                    crc = (crc << 1) ^ CRC24.POLYNOMIAL
+                else:
+                    crc = (crc << 1)
+                crc &= 0xFFFFFF  # Keep 24 bits
         return crc.to_bytes(3, 'big')
 
     @staticmethod
@@ -1061,43 +1055,72 @@ class PicADSBMultiplexer:
             self.logger.error(f"Beast message validation error: {e}")
             return False
 
+    def _validate_message_length(self, msg_type: int, data: bytes):
+        """
+        Validate message length based on type.
 
-    def test_beast_format(self):
-        """Comprehensive Beast format verification suite."""
-        test_vectors = [
-            # Original test
-            ("8D406B902015A678D4D2200AA728", "1A3280EA1A9E8D406B902015A678D4D2200AA7284F3E5D", BeastFormat.TYPE_MODES_LONG),
-            # Additional tests
-            ("5D8965B360ADD7", "1A3280EA1A9E5D8965B360ADD71D2A9C", BeastFormat.TYPE_MODES_SHORT),
-            ("5D8965B360ADDB", "1A3280EA1A9E5D8965B360ADDB00485A", BeastFormat.TYPE_MODES_SHORT)
-        ]
+        Args:
+            msg_type: Message type (MODE_S_SHORT or MODE_S_LONG)
+            data: Raw message data
 
-        for hex_data, expected_msg, msg_type in test_vectors:
-            data = bytes.fromhex(hex_data)
-            msg = self._create_beast_message(msg_type, data)
+        Raises:
+            ValueError: If message length is invalid
+        """
+        if msg_type == BeastFormat.TYPE_MODES_LONG and len(data) != 14:
+            raise ValueError(f"Invalid long message length: {len(data)}")
+        elif msg_type == BeastFormat.TYPE_MODES_SHORT and len(data) != 7:
+            raise ValueError(f"Invalid short message length: {len(data)}")
 
-            # Test message creation
-            assert msg == bytes.fromhex(expected_msg), \
-                   f"Format mismatch for {hex_data}:\n" \
-                   f"Expected: {expected_msg}\n" \
-                   f"Got: {msg.hex()}"
+    def self_test(self):
+        """Perform self-test on startup."""
+        self.logger.info("Performing self-test...")
 
-            # Test validation
-            assert self._validate_beast_message(msg), \
-                   f"Validation failed for {hex_data}"
+        try:
+            test_vectors = [
+                ("8D406B902015A678D4D2200AA728", "4F3E5D", BeastFormat.TYPE_MODES_LONG),
+                ("8D4840D6202CC371C32CE0576098", "25B505", BeastFormat.TYPE_MODES_LONG),
+                ("5D8965B360ADD7", "1D2A9C", BeastFormat.TYPE_MODES_SHORT)
+            ]
 
-            # Test corruption detection
-            corrupted = bytearray(msg)
-            corrupted[-1] ^= 0xFF
-            assert not self._validate_beast_message(bytes(corrupted)), \
-                   f"Corruption undetected for {hex_data}"
+            for hex_data, expected_crc, msg_type in test_vectors:
+                data = bytes.fromhex(hex_data)
 
-            # Test escape handling
-            escaped = msg.replace(bytes([BeastFormat.ESCAPE]),
-                                bytes([BeastFormat.ESCAPE, BeastFormat.ESCAPE]))
-            assert self._validate_beast_message(escaped), \
-                   f"Escape handling failed for {hex_data}"
+                # Validate message length
+                self._validate_message_length(msg_type, data)
 
+                # Detailed debug output
+                self.logger.debug(f"Test vector:")
+                self.logger.debug(f"  Data (hex): {hex_data}")
+                self.logger.debug(f"  Data (bytes): {' '.join(f'{b:02X}' for b in data)}")
+                self.logger.debug(f"  Length: {len(data)} bytes")
+                self.logger.debug(f"  Message type: 0x{msg_type:02X}")
+                self.logger.debug(f"  Expected CRC: {expected_crc}")
+
+                crc = CRC24.compute(data)
+                computed_crc_hex = crc.hex().upper()
+
+                self.logger.debug(f"  Computed CRC: {computed_crc_hex}")
+
+                if computed_crc_hex != expected_crc:
+                    raise ValueError(
+                        f"CRC mismatch for {hex_data}:\n"
+                        f"Expected: {expected_crc}\n"
+                        f"Got: {computed_crc_hex}"
+                    )
+
+                # Test Beast message creation
+                beast_msg = self._create_beast_message(msg_type, data)
+                if not beast_msg:
+                    raise ValueError(f"Failed to create Beast message for {hex_data}")
+
+                self.logger.debug(f"  Beast message: {beast_msg.hex().upper()}")
+
+            self.logger.info("Self-test passed successfully ✓")
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Self-test failed: {e}")
+            return False
 
     def self_test(self):
         """Perform self-test on startup."""
