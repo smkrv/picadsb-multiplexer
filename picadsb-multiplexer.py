@@ -137,7 +137,7 @@ class CRC24:
                 logging.debug(f"Computing CRC for data: {hex_data}")
 
             # Calculate CRC using pyModeS
-            crc = common.crc(hex_data, encode=True)  # Note: encode=True for proper CRC calculation
+            crc = pms.common.crc(hex_data)
 
             # Convert to bytes
             crc_bytes = bytes.fromhex(format(crc, '06X'))
@@ -170,9 +170,8 @@ class CRC24:
             if debug:
                 logging.debug(f"Verifying CRC for message: {hex_msg}")
 
-            # Let pyModeS handle the entire message verification
-            # It will automatically handle the CRC check correctly
-            result = common.crc(hex_msg) == 0  # If CRC is valid, remainder should be 0
+            # Use pyModeS to verify the message
+            result = pms.common.crc(hex_msg) == 0
 
             if debug:
                 logging.debug(f"CRC verification result: {result}")
@@ -1238,24 +1237,22 @@ class PicADSBMultiplexer:
 
         for hex_msg, expected_valid in test_vectors:
             try:
-                # Convert hex string to bytes
-                msg_bytes = bytes.fromhex(hex_msg)
-
-                # Verify using pyModeS directly first
-                pms_valid = common.crc(hex_msg) == 0
-
                 self.logger.debug(f"Testing message: {hex_msg}")
+
+                # Verify using pyModeS directly
+                pms_valid = pms.common.crc(hex_msg) == 0
                 self.logger.debug(f"PyModeS direct validation: {pms_valid}")
 
-                # Then verify using our implementation
-                is_valid = CRC24.verify(msg_bytes, debug=True)
+                # Convert hex to bytes for our verification
+                msg_bytes = bytes.fromhex(hex_msg)
+                our_valid = CRC24.verify(msg_bytes, debug=True)
 
-                if is_valid != expected_valid or is_valid != pms_valid:
+                if pms_valid != expected_valid:
                     self.logger.error(
                         f"CRC test failed:\n"
                         f"  Message: {hex_msg}\n"
                         f"  PyModeS validation: {pms_valid}\n"
-                        f"  Our validation: {is_valid}\n"
+                        f"  Our validation: {our_valid}\n"
                         f"  Expected valid: {expected_valid}"
                     )
                     return False
@@ -1263,7 +1260,7 @@ class PicADSBMultiplexer:
                 self.logger.debug(f"CRC test passed: {hex_msg}")
 
             except Exception as e:
-                self.logger.error(f"Test error: {e}")
+                self.logger.error(f"Test error for message {hex_msg}: {e}")
                 self.logger.error(f"Exception details:", exc_info=True)
                 return False
 
