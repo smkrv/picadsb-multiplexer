@@ -36,6 +36,7 @@ import sys
 import time
 import os
 import signal
+import pyModeS
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List, Tuple
 from pyModeS import crc
@@ -130,14 +131,14 @@ class CRC24:
         """
         try:
             if debug:
-                print(f"Input data: {data.hex().upper()}")
+                logging.getLogger('PicADSB.CRC').debug(f"Computing CRC for: {data.hex().upper()}")
 
-            from pyModeS import crc
-            crc_int = crc.crc24(data)
+            # Use pyModeS crc24 function
+            crc_int = pyModeS.crc.crc24(data)
             crc_bytes = crc_int.to_bytes(3, 'big')
 
             if debug:
-                print(f"Computed CRC: {crc_bytes.hex().upper()}")
+                logging.getLogger('PicADSB.CRC').debug(f"Computed CRC: {crc_bytes.hex().upper()}")
 
             return crc_bytes
 
@@ -158,6 +159,7 @@ class CRC24:
             True if CRC matches, False otherwise
         """
         try:
+            # Compute CRC for message without CRC bytes
             computed = CRC24.compute(message[:-3])
             return computed == expected_crc
         except Exception as e:
