@@ -36,7 +36,7 @@ import sys
 import time
 import os
 import signal
-import pyModeS
+import pyModeS as pms
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List, Tuple
 
@@ -113,28 +113,40 @@ class TimestampGenerator:
 
 class CRC24:
     """
-    Correct CRC-24 implementation for ADS-B using pyModeS.
-    Complies with DF-17 message structure (112 bits).
+    CRC-24 implementation for ADS-B/Mode-S messages using pyModeS.
     """
 
     @staticmethod
     def compute(data: bytes, debug: bool = False) -> bytes:
         """
-        Calculates CRC for first 11 bytes of DF-17 message.
-        Returns 3 bytes of CRC to create complete 14-byte message.
+        Compute CRC-24 for 11-byte ADS-B data.
+
+        Args:
+            data (bytes): 11 bytes of message data without CRC
+            debug (bool): Enable debug logging
+
+        Returns:
+            bytes: 3-byte CRC value
         """
         try:
-            if len(data) != 11:  # Fix 1: Expect 11 bytes of data (without CRC)
-                raise ValueError(f"Invalid data length: {len(data)} bytes. Expected 11 bytes (88 bits)")
+            if len(data) != 11:
+                raise ValueError(f"Invalid data length: {len(data)}. Expected 11 bytes")
 
-            # Create temporary 14-byte buffer (11 data + 3 zeros for CRC)
+            if debug:
+                logging.debug(f"Input data (11 bytes): {data.hex().upper()}")
+
+            # Create temporary 14-byte message (11 data + 3 zero CRC)
             temp_msg = data + b'\x00\x00\x00'
             hex_msg = temp_msg.hex().upper()
 
-            # Calculate CRC using pyModeS
-            crc_calculated = pyModeS.util.crc(hex_msg)
+            # Use pyModeS crc function
+            crc_int = pms.common.crc(hex_msg)  # Changed from util.crc to common.crc
+            crc_bytes = crc_int.to_bytes(3, 'big')
 
-            return crc_calculated.to_bytes(3, 'big')
+            if debug:
+                logging.debug(f"Computed CRC: {crc_bytes.hex().upper()}")
+
+            return crc_bytes
 
         except Exception as e:
             logging.error(f"CRC Error: {str(e)}")
@@ -142,16 +154,22 @@ class CRC24:
 
     @staticmethod
     def verify(raw_message: bytes) -> bool:
-        """Checks CRC in complete 14-byte message"""
+        """
+        Verify CRC in complete 14-byte message.
+
+        Args:
+            raw_message (bytes): Complete 14-byte message including CRC
+
+        Returns:
+            bool: True if CRC is valid
+        """
         if len(raw_message) != 14:
             return False
 
-        # Extract data (first 11 bytes) and CRC (last 3)
         data = raw_message[:11]
         received_crc = raw_message[-3:]
-
-        # Calculate CRC for data
         computed_crc = CRC24.compute(data)
+
         return computed_crc == received_crc
 
 class PicADSBMultiplexer:
@@ -1191,25 +1209,31 @@ class PicADSBMultiplexer:
         self.running = False
 
     def self_test(self):
-        """Updated test vectors for DF-17"""
+        """Test vectors for DF-17 messages"""
         test_vectors = [
-            # Format: (11 bytes of data, 3 bytes of expected CRC)  
-            (bytes.fromhex("8D406B902015A678D4D220"), "0AA728"),
-            (bytes.fromhex("8D75804B58FFA8D0DA8B4C"), "B1872C"),
-            (bytes.fromhex("8D4840D6202CC371C32CE0"), "578E11")
+            # (data_hex, expected_crc_hex)
+            ("8D406B902015A678D4D220", "0AA728"),  # ICAO example
+            ("8D75804B58FFA8D0DA8B4C", "B1872C"),  # Real aircraft
+            ("8D4840D6202CC371C32CE0", "578E11")   # Additional test
         ]
 
-        for data, expected_crc in test_vectors:
-            computed_crc = CRC24.compute(data).hex().upper()
+        for data_hex, expected_crc in test_vectors:
+            data = bytes.fromhex(data_hex)
+            computed_crc = CRC24.compute(data, debug=True).hex().upper()
 
             if computed_crc != expected_crc:
-                self.logger.error(f"FAIL: {data.hex()} → {computed_crc} vs {expected_crc}")
+                self.logger.error(
+                    f"CRC test failed:\n"
+                    f"Data: {data_hex}\n"
+                    f"Expected CRC: {expected_crc}\n"
+                    f"Computed CRC: {computed_crc}"
+                )
                 return False
             else:
-                self.logger.debug(f"PASS: {expected_crc}")
+                self.logger.debug(f"Test passed: {data_hex[:6]}... → {computed_crc}")
 
-        self.logger.info("All CRC tests passed ✓")
-        return True
+        self.logger.info("All CRC tests passed successfully")
+        return True  
 
     def run(self):
         """Main operation loop."""
