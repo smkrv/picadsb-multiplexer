@@ -117,7 +117,7 @@ class CRC24:
     - Proper parity bit removal
     - Correct 7-bit reversal
     - Proper bit positioning
-    - Correct byte ordering in result
+    - Correct byte ordering (big-endian)
     """
     POLYNOMIAL = 0x1FFF409  # ICAO Annex 10 polynomial
     INIT = 0xFFFFFF        # Initial value
@@ -145,8 +145,8 @@ class CRC24:
         for i, byte in enumerate(data):
             # Remove parity bit and reverse 7 bits
             original_byte = byte
-            cleaned = (byte & 0xFE) >> 1
-            reversed_byte = int(f"{cleaned:07b}"[::-1], 2)
+            cleaned = (byte & 0xFE) >> 1  # Remove parity bit
+            reversed_byte = int(f"{cleaned:07b}"[::-1], 2)  # Reverse 7 bits
 
             if debug:
                 print(f"\nByte {i}: {original_byte:02X}")
@@ -169,16 +169,16 @@ class CRC24:
                     print(f"    Bit {bit}: {old_crc:06X} -> {crc:06X} " +
                           ("(XOR)" if old_crc & 0x800000 else "(shift)"))
 
-        # Reverse all bits and reorder bytes
+        # Reverse all bits and use big-endian byte order
         reversed_crc = int(f"{crc:024b}"[::-1], 2)
 
         if debug:
             print(f"\nFinal CRC before bit reversal: {crc:06X}")
             print(f"After 24-bit reversal: {reversed_crc:06X}")
-            result = reversed_crc.to_bytes(3, 'little')
-            print(f"Final CRC (little-endian): {result.hex().upper()}")
+            result = reversed_crc.to_bytes(3, 'big')
+            print(f"Final CRC (big-endian): {result.hex().upper()}")
 
-        return reversed_crc.to_bytes(3, 'little')
+        return reversed_crc.to_bytes(3, 'big')
 
     @staticmethod
     def verify(message: bytes, expected_crc: bytes) -> bool:
