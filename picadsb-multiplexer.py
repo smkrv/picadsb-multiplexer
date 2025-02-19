@@ -1217,52 +1217,68 @@ class PicADSBMultiplexer:
         self.logger.info(f"Received signal {signum}, shutting down...")
         self.running = False
 
-def self_test(self) -> bool:
-    """
-    Perform self-test of CRC implementation using known test vectors.
+    def self_test(self) -> bool:
+        """
+        Perform self-test of CRC implementation using known test vectors.
 
-    Returns:
-        True if all tests pass, False otherwise
-    """
-    test_vectors = [
-        # Real ADS-B messages with valid CRC
-        ("8D152000004F90000000002D82E0", True),
-        ("A00009B9FD39F31EFE5FCF114E6E", True),
-        ("A8001213801FF72420049259ED27", True),
-        ("A0000914803FD123600C90891522", True),
+        Returns:
+            True if all tests pass, False otherwise
+        """
+        test_vectors = [
+            # Real ADS-B messages with valid CRC
+            ("8D152000004F90000000002D82E0", True),
+            ("A00009B9FD39F31EFE5FCF114E6E", True),
+            ("A8001213801FF72420049259ED27", True),
+            ("A0000914803FD123600C90891522", True),
 
-        # Invalid messages that should fail
-        ("8D406B902015A678D4D220INVALID", False),
-        ("NOT_A_VALID_MESSAGE", False)
-    ]
+            # Invalid messages that should fail
+            ("8D406B902015A678D4D220INVALID", False),
+            ("NOT_A_VALID_MESSAGE", False)
+        ]
 
-    self.logger.info("Running CRC self-test...")
+        self.logger.info("Running CRC self-test...")
 
-    for hex_msg, expected_valid in test_vectors:
-        try:
-            # Convert hex string to bytes
-            msg_bytes = bytes.fromhex(hex_msg)
+        for hex_msg, expected_valid in test_vectors:
+            try:
+                # Convert hex string to bytes
+                msg_bytes = bytes.fromhex(hex_msg)
 
-            # Verify using pyModeS
-            is_valid = CRC24.verify(msg_bytes, debug=True)
+                # Verify using pyModeS
+                is_valid = CRC24.verify(msg_bytes, debug=True)
 
-            if is_valid != expected_valid:
-                self.logger.error(
-                    f"CRC test failed:\n"
-                    f"  Message: {hex_msg}\n"
-                    f"  Expected valid: {expected_valid}\n"
-                    f"  Got valid: {is_valid}"
-                )
+                if is_valid != expected_valid:
+                    self.logger.error(
+                        f"CRC test failed:\n"
+                        f"  Message: {hex_msg}\n"
+                        f"  Expected valid: {expected_valid}\n"
+                        f"  Got valid: {is_valid}"
+                    )
+                    return False
+
+                if expected_valid:
+                    # For valid messages, also test CRC computation
+                    msg_without_crc = msg_bytes[:-3]
+                    computed_crc = CRC24.compute(msg_without_crc, debug=True)
+                    expected_crc = msg_bytes[-3:]
+
+                    if computed_crc != expected_crc:
+                        self.logger.error(
+                            f"CRC computation test failed:\n"
+                            f"  Message: {hex_msg}\n"
+                            f"  Data: {msg_without_crc.hex().upper()}\n"
+                            f"  Expected CRC: {expected_crc.hex().upper()}\n"
+                            f"  Computed CRC: {computed_crc.hex().upper()}"
+                        )
+                        return False
+
+                self.logger.debug(f"CRC test passed: {hex_msg}")
+
+            except Exception as e:
+                self.logger.error(f"Test error: {e}")
                 return False
 
-            self.logger.debug(f"CRC test passed: {hex_msg}")
-
-        except Exception as e:
-            self.logger.error(f"Test error: {e}")
-            return False
-
-    self.logger.info("All CRC tests passed successfully")
-    return True
+        self.logger.info("All CRC tests passed successfully")
+        return True
 
     def run(self):
         """Main operation loop."""
