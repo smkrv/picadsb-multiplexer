@@ -118,11 +118,6 @@ class CRC24:
     INIT = 0xFFFFFF
 
     @staticmethod
-    def print_binary(value: int, width: int = 24) -> str:
-        """Format integer as binary string with given width."""
-        return format(value, f'0{width}b')
-
-    @staticmethod
     def compute(data: bytes, debug: bool = False) -> bytes:
         crc = CRC24.INIT
 
@@ -139,18 +134,11 @@ class CRC24:
             # Remove parity bit
             byte_no_parity = (byte & 0xFE) >> 1
 
-            # Reverse the 7 bits
-            reversed_byte = 0
-            for j in range(7):
-                if byte_no_parity & (1 << j):
-                    reversed_byte |= 1 << (6 - j)
-
             if debug:
                 print(f"  After parity removal (0xFE >> 1): {byte_no_parity:02X} ({format(byte_no_parity, '07b')})")
-                print(f"  After 7-bit reversal: {reversed_byte:02X} ({format(reversed_byte, '07b')})")
 
             # XOR the byte into the MSB of the CRC
-            crc ^= (reversed_byte << 16)
+            crc ^= (byte_no_parity << 16)
 
             if debug:
                 print(f"  After XOR with shifted byte: {crc:06X}")
@@ -166,35 +154,22 @@ class CRC24:
                 if debug:
                     print(f"    Bit {bit}: {old_crc:06X} -> {crc:06X}")
 
-        # Reverse the entire CRC
-        reversed_crc = 0
-        for i in range(24):
-            if crc & (1 << i):
-                reversed_crc |= 1 << (23 - i)
+        # Reverse bits in each byte of the final CRC
+        final_bytes = crc.to_bytes(3, 'big')
+        result = 0
+
+        # Reverse bits in each byte
+        for b in final_bytes:
+            reversed_byte = int(format(b, '08b')[::-1], 2)
+            result = (result << 8) | reversed_byte
 
         if debug:
             print(f"\nFinal CRC before reversal: {crc:06X}")
-            print(f"Binary before reversal: {CRC24.print_binary(crc)}")
-            print(f"Final CRC after reversal: {reversed_crc:06X}")
-            print(f"Binary after reversal:  {CRC24.print_binary(reversed_crc)}")
+            print(f"Binary before reversal: {format(crc, '024b')}")
+            print(f"Final CRC after reversal: {result:06X}")
+            print(f"Binary after reversal:  {format(result, '024b')}")
 
-        # Convert to bytes in big-endian order
-        return reversed_crc.to_bytes(3, 'big')
-
-    @staticmethod
-    def verify(message: bytes, expected_crc: bytes) -> bool:
-        """Verify message CRC."""
-        computed = CRC24.compute(message[:-3])
-        return computed == expected_crc
-
-    @staticmethod
-    def reverse_bits(value: int, width: int) -> int:
-        """Reverse bits in an integer."""
-        result = 0
-        for i in range(width):
-            if value & (1 << i):
-                result |= 1 << (width - 1 - i)
-        return result
+        return result.to_bytes(3, 'big')
 
 class PicADSBMultiplexer:
     """Main multiplexer class that handles device communication and client connections."""
