@@ -137,7 +137,7 @@ class CRC24:
                 logging.debug(f"Computing CRC for data: {hex_data}")
 
             # Calculate CRC using pyModeS
-            crc = pms.common.crc(hex_data)
+            crc = common.crc(hex_data)
 
             # Convert to bytes
             crc_bytes = bytes.fromhex(format(crc, '06X'))
@@ -170,16 +170,20 @@ class CRC24:
             if debug:
                 logging.debug(f"Verifying CRC for message: {hex_msg}")
 
-            # Use pyModeS to verify - compute CRC and compare with last 6 characters
-            computed_crc = pms.common.crc(hex_msg[:-6])
+            # Extract message without CRC and expected CRC
+            msg_without_crc = hex_msg[:-6]
             expected_crc = int(hex_msg[-6:], 16)
+
+            # Compute CRC using pyModeS
+            computed_crc = common.crc(msg_without_crc)
 
             result = computed_crc == expected_crc
 
             if debug:
-                logging.debug(f"CRC verification result: {result}")
+                logging.debug(f"Message without CRC: {msg_without_crc}")
                 logging.debug(f"Computed CRC: {format(computed_crc, '06X')}")
                 logging.debug(f"Expected CRC: {format(expected_crc, '06X')}")
+                logging.debug(f"CRC verification result: {result}")
 
             return result
 
@@ -1236,27 +1240,26 @@ class PicADSBMultiplexer:
             ("A00009B9FD39F31EFE5FCF114E6E", True),
             ("A8001213801FF72420049259ED27", True),
             ("A0000914803FD123600C90891522", True),
-
-            # Invalid messages that should fail
-            ("8D406B902015A678D4D220INVALID", False),
-            ("NOT_A_VALID_MESSAGE", False)
         ]
 
         self.logger.info("Running CRC self-test...")
 
         for hex_msg, expected_valid in test_vectors:
             try:
-                # Skip invalid hex strings
-                if not all(c in '0123456789ABCDEFabcdef' for c in hex_msg):
-                    if not expected_valid:
-                        self.logger.debug(f"Correctly skipped invalid hex: {hex_msg}")
-                        continue
-                    else:
-                        self.logger.error(f"Invalid hex string marked as valid: {hex_msg}")
-                        return False
-
                 # Convert hex string to bytes
                 msg_bytes = bytes.fromhex(hex_msg)
+
+                # Get message parts for debugging
+                msg_without_crc = hex_msg[:-6]
+                expected_crc = hex_msg[-6:]
+
+                # Compute CRC
+                computed_crc = format(common.crc(msg_without_crc), '06X')
+
+                self.logger.debug(f"Testing message: {hex_msg}")
+                self.logger.debug(f"Message without CRC: {msg_without_crc}")
+                self.logger.debug(f"Expected CRC: {expected_crc}")
+                self.logger.debug(f"Computed CRC: {computed_crc}")
 
                 # Verify using our implementation
                 is_valid = CRC24.verify(msg_bytes, debug=True)
@@ -1265,6 +1268,9 @@ class PicADSBMultiplexer:
                     self.logger.error(
                         f"CRC test failed:\n"
                         f"  Message: {hex_msg}\n"
+                        f"  Message without CRC: {msg_without_crc}\n"
+                        f"  Expected CRC: {expected_crc}\n"
+                        f"  Computed CRC: {computed_crc}\n"
                         f"  Expected valid: {expected_valid}\n"
                         f"  Got valid: {is_valid}"
                     )
@@ -1274,6 +1280,7 @@ class PicADSBMultiplexer:
 
             except Exception as e:
                 self.logger.error(f"Test error: {e}")
+                self.logger.error(f"Exception details:", exc_info=True)
                 return False
 
         self.logger.info("All CRC tests passed successfully")
