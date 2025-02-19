@@ -495,7 +495,7 @@ class PicADSBMultiplexer:
             time.sleep(0.25)
 
             if not self.skip_init:
-                retry_count = 3
+                retry_count = 10
                 while retry_count > 0:
                     if self._initialize_device():
                         break
