@@ -112,27 +112,13 @@ class TimestampGenerator:
 
 class CRC24:
     """
-    Mode-S CRC-24 implementation.
-    Polynomial: x^24 + x^23 + x^22 + x^21 + x^20 + x^19 + x^18 + x^17 + x^16 + x^15 + x^14 + x^13 + x^12 + x^11 + x^10 + x^9 + x^8 + x^7 + x^6 + x^5 + x^4 + x^3 + x^1 + 1
+    Mode-S CRC-24 implementation according to ICAO Annex 10.
     """
-    GENERATOR = 0xFFF409
-    TABLE = []
+    def __init__(self):
+        self.crc = 0
 
-    @classmethod
-    def _init_table(cls):
-        """Initialize CRC-24 lookup table."""
-        if not cls.TABLE:
-            for i in range(256):
-                crc = i << 16
-                for _ in range(8):
-                    if crc & 0x800000:
-                        crc = ((crc << 1) ^ cls.GENERATOR) & 0xFFFFFF
-                    else:
-                        crc = (crc << 1) & 0xFFFFFF
-                cls.TABLE.append(crc)
-
-    @classmethod
-    def compute(cls, data: bytes) -> bytes:
+    @staticmethod
+    def compute(data: bytes) -> bytes:
         """
         Compute CRC-24 for Mode-S message.
 
@@ -142,20 +128,33 @@ class CRC24:
         Returns:
             3-byte CRC value in big-endian order
         """
-        cls._init_table()  # Initialize table if needed
-
+        GENERATOR = 0xFFF409
         crc = 0
+
         for byte in data:
-            crc = ((crc << 8) | byte) & 0xFFFFFF
-            crc ^= cls.TABLE[(crc >> 16) & 0xFF]
+            crc ^= (byte << 16)
+            for _ in range(8):
+                if crc & 0x800000:
+                    crc = ((crc << 1) ^ GENERATOR) & 0xFFFFFF
+                else:
+                    crc = (crc << 1) & 0xFFFFFF
 
         return crc.to_bytes(3, 'big')
 
-    @classmethod
-    def verify(cls, message: bytes, crc: bytes) -> bool:
-        """Verify CRC of a message."""
-        computed = cls.compute(message)
-        return computed == crc
+    @staticmethod
+    def verify(message: bytes, expected_crc: bytes) -> bool:
+        """
+        Verify CRC of a message.
+
+        Args:
+            message: Raw message without CRC
+            expected_crc: Expected CRC bytes
+
+        Returns:
+            True if CRC matches
+        """
+        computed_crc = CRC24.compute(message)
+        return computed_crc == expected_crc
 
 class PicADSBMultiplexer:
     """Main multiplexer class that handles device communication and client connections."""
@@ -1109,18 +1108,32 @@ class PicADSBMultiplexer:
 
             for hex_data, expected_crc, msg_type in test_vectors:
                 data = bytes.fromhex(hex_data)
+
+                # Подробный вывод для отладки
+                self.logger.debug(f"Test vector:")
+                self.logger.debug(f"  Data (hex): {hex_data}")
+                self.logger.debug(f"  Data (bytes): {' '.join(f'{b:02X}' for b in data)}")
+                self.logger.debug(f"  Length: {len(data)} bytes")
+                self.logger.debug(f"  Expected CRC: {expected_crc}")
+
                 crc = CRC24.compute(data)
+                computed_crc_hex = crc.hex().upper()
 
-                self.logger.debug(f"Testing CRC for data: {hex_data}")
-                self.logger.debug(f"Expected CRC: {expected_crc}")
-                self.logger.debug(f"Computed CRC: {crc.hex().upper()}")
+                self.logger.debug(f"  Computed CRC: {computed_crc_hex}")
 
-                if crc.hex().upper() != expected_crc:
+                if computed_crc_hex != expected_crc:
                     raise ValueError(
                         f"CRC mismatch for {hex_data}:\n"
                         f"Expected: {expected_crc}\n"
-                        f"Got: {crc.hex().upper()}"
+                        f"Got: {computed_crc_hex}"
                     )
+
+                # Проверка Beast-сообщения
+                beast_msg = self._create_beast_message(msg_type, data)
+                if not beast_msg:
+                    raise ValueError(f"Failed to create Beast message for {hex_data}")
+
+                self.logger.debug(f"  Beast message: {beast_msg.hex().upper()}")
 
             self.logger.info("Self-test passed successfully ✓")
             return True
