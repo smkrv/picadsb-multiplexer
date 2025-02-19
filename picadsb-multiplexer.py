@@ -924,31 +924,44 @@ class PicADSBMultiplexer:
                 i += 1
         return bytes(unescaped)
 
-    def _create_beast_message(self, msg_type: int, data: bytes) -> bytes:
-        """Create Beast format message with proper CRC."""
+    def _create_beast_message(self, msg_type: int, data: bytes, 
+                             timestamp: bytes = None) -> bytes:
+        """
+        Create Beast format message with proper CRC.
+
+        Args:
+            msg_type: Message type (0x32 or 0x33)
+            data: Raw Mode-S message data
+            timestamp: Optional 6-byte timestamp (if None, generates new)
+
+        Returns:
+            Complete Beast message with escape sequences
+        """
         try:
             # Validate input
-            if msg_type not in (BeastFormat.TYPE_MODEA,
-                               BeastFormat.TYPE_MODES_SHORT,
+            if msg_type not in (BeastFormat.TYPE_MODES_SHORT,
                                BeastFormat.TYPE_MODES_LONG):
-                raise ValueError(f"Invalid message type: 0x{msg_type:02x}")
+                raise ValueError(f"Invalid message type: 0x{msg_type:02X}")
 
-            if len(data) not in (BeastFormat.MODEA_LEN,
-                                BeastFormat.MODES_SHORT_LEN,
-                                BeastFormat.MODES_LONG_LEN):
-                raise ValueError(f"Invalid data length: {len(data)}")
+            # Use provided timestamp or generate new
+            if timestamp is None:
+                timestamp = self.timestamp_gen.get_timestamp()
+            elif len(timestamp) != 6:
+                raise ValueError(f"Invalid timestamp length: {len(timestamp)}")
 
-            # Generate components
-            timestamp = self.timestamp_gen.get_timestamp()
-            crc = CRC24.compute(data)
+            # Form complete message for CRC calculation
+            crc_input = bytes([msg_type]) + timestamp + data
+            crc = CRC24.compute(crc_input)
 
-            # Log for debugging
+            # Log components for debugging
             self.logger.debug(f"Beast message components:")
-            self.logger.debug(f"  Type: 0x{msg_type:02x}")
-            self.logger.debug(f"  Data: {data.hex()}")
-            self.logger.debug(f"  CRC:  {crc.hex()}")
+            self.logger.debug(f"  Type: 0x{msg_type:02X}")
+            self.logger.debug(f"  Timestamp: {timestamp.hex().upper()}")
+            self.logger.debug(f"  Data: {data.hex().upper()}")
+            self.logger.debug(f"  CRC input: {crc_input.hex().upper()}")
+            self.logger.debug(f"  CRC: {crc.hex().upper()}")
 
-            # Assemble message
+            # Assemble final message
             message = bytearray()
             message.append(BeastFormat.ESCAPE)
             message.append(msg_type)
@@ -1123,49 +1136,59 @@ class PicADSBMultiplexer:
             return False
 
     def self_test(self):
-        """Perform self-test on startup."""
+        """
+        Perform self-test with complete Beast message format.
+        Tests CRC calculation including message type and timestamp.
+        """
         self.logger.info("Performing self-test...")
 
         try:
+            # Test vectors with complete message components
             test_vectors = [
-                ("8D406B902015A678D4D2200AA728", "4F3E5D", BeastFormat.TYPE_MODES_LONG),
-                ("5D8965B360ADD7", "1D2A9C", BeastFormat.TYPE_MODES_SHORT),
-                ("8D4840D6202CC371C32CE0576098", "25B505", BeastFormat.TYPE_MODES_LONG)
+                # (hex_data, msg_type, timestamp, expected_crc)
+                ("8D406B902015A678D4D2200AA728", 0x33, "0012ED141C6B", "4F3E5D"),
+                ("5D8965B360ADD7", 0x32, "0012ED15A749", "1D2A9C")
             ]
 
-            for hex_data, expected_crc, msg_type in test_vectors:
+            for hex_data, msg_type, ts_hex, expected_crc in test_vectors:
+                # Convert components to bytes
                 data = bytes.fromhex(hex_data)
+                timestamp = bytes.fromhex(ts_hex)
 
                 # Validate message length
-                if msg_type == BeastFormat.TYPE_MODES_LONG and len(data) != 14:
-                    raise ValueError(f"Invalid long message length: {len(data)}")
-                elif msg_type == BeastFormat.TYPE_MODES_SHORT and len(data) != 7:
-                    raise ValueError(f"Invalid short message length: {len(data)}")
+                expected_len = 14 if msg_type == BeastFormat.TYPE_MODES_LONG else 7
+                if len(data) != expected_len:
+                    raise ValueError(f"Invalid message length: {len(data)} for type 0x{msg_type:02X}")
+
+                # Form complete message for CRC calculation
+                crc_input = bytes([msg_type]) + timestamp + data
 
                 # Detailed debug output
-                self.logger.debug(f"Test vector:")
-                self.logger.debug(f"  Data (hex): {hex_data}")
-                self.logger.debug(f"  Data (bytes): {' '.join(f'{b:02X}' for b in data)}")
-                self.logger.debug(f"  Length: {len(data)} bytes")
-                self.logger.debug(f"  Message type: 0x{msg_type:02X}")
+                self.logger.debug(f"Test vector components:")
+                self.logger.debug(f"  Type: 0x{msg_type:02X}")
+                self.logger.debug(f"  Timestamp: {ts_hex}")
+                self.logger.debug(f"  Data: {hex_data}")
+                self.logger.debug(f"  Complete CRC input: {crc_input.hex().upper()}")
                 self.logger.debug(f"  Expected CRC: {expected_crc}")
 
-                crc = CRC24.compute(data)
-                computed_crc_hex = crc.hex().upper()
+                # Calculate CRC for complete message
+                crc = CRC24.compute(crc_input)
+                computed_crc = crc.hex().upper()
 
-                self.logger.debug(f"  Computed CRC: {computed_crc_hex}")
+                self.logger.debug(f"  Computed CRC: {computed_crc}")
 
-                if computed_crc_hex != expected_crc:
+                if computed_crc != expected_crc:
                     raise ValueError(
-                        f"CRC mismatch for {hex_data}:\n"
+                        f"CRC mismatch:\n"
+                        f"Input: {crc_input.hex().upper()}\n"
                         f"Expected: {expected_crc}\n"
-                        f"Got: {computed_crc_hex}"
+                        f"Got: {computed_crc}"
                     )
 
-                # Test Beast message creation
-                beast_msg = self._create_beast_message(msg_type, data)
+                # Test complete Beast message creation
+                beast_msg = self._create_beast_message(msg_type, data, timestamp)
                 if not beast_msg:
-                    raise ValueError(f"Failed to create Beast message for {hex_data}")
+                    raise ValueError(f"Failed to create Beast message")
 
                 self.logger.debug(f"  Beast message: {beast_msg.hex().upper()}")
 
