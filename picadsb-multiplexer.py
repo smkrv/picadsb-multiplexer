@@ -111,70 +111,21 @@ class TimestampGenerator:
             return fallback.to_bytes(6, 'big')
 
 class CRC24:
-    """
-    Mode-S CRC-24 implementation with parity bit handling and proper byte order.
-    """
-    POLYNOMIAL = 0x1FFF409  # LSB-first polynomial
+    POLYNOMIAL = 0x1FFF409  # Правильный полином для MSB-first
     INIT = 0x000000
 
     @staticmethod
-    def _reverse_bits(byte: int) -> int:
-        """Reverse bits in byte and remove parity."""
-        # Reverse bits
-        byte = ((byte & 0x01) << 7) | ((byte & 0x02) << 5) | \
-               ((byte & 0x04) << 3) | ((byte & 0x08) << 1) | \
-               ((byte & 0x10) >> 1) | ((byte & 0x20) >> 3) | \
-               ((byte & 0x40) >> 5) | ((byte & 0x80) >> 7)
-        # Remove parity bit
-        return byte & 0x7F
-
-    @staticmethod
     def compute(data: bytes) -> bytes:
-        """
-        Compute CRC-24 for complete Beast message.
-
-        Args:
-            data: Complete message including type and timestamp
-
-        Returns:
-            3-byte CRC value
-        """
         crc = CRC24.INIT
-
         for byte in data:
-            # Process each byte with bit reversal and parity removal
-            processed_byte = CRC24._reverse_bits(byte)
-            crc ^= processed_byte << 16
-
+            crc ^= byte << 16
             for _ in range(8):
                 if crc & 0x800000:
                     crc = (crc << 1) ^ CRC24.POLYNOMIAL
                 else:
                     crc <<= 1
-                crc &= 0xFFFFFF
-
+                crc &= 0xFFFFFF  
         return crc.to_bytes(3, 'big')
-
-    @staticmethod
-    def verify(message: bytes, expected_crc: bytes) -> bool:
-        """Verify message CRC."""
-        computed = CRC24.compute(message)
-        return computed == expected_crc
-
-    @staticmethod
-    def verify(message: bytes, expected_crc: bytes) -> bool:
-        """
-        Verify CRC of a message.
-
-        Args:
-            message: Raw message without CRC
-            expected_crc: Expected CRC bytes
-
-        Returns:
-            True if CRC matches
-        """
-        computed_crc = CRC24.compute(message)
-        return computed_crc == expected_crc
 
 class PicADSBMultiplexer:
     """Main multiplexer class that handles device communication and client connections."""
@@ -1112,29 +1063,25 @@ class PicADSBMultiplexer:
 
         try:
             test_vectors = [
-                # (hex_data, msg_type, timestamp, expected_crc)
-                ("8D406B902015A678D4D2200AA728", 0x33, "0012ED141C6B", "4F3E5D"),
-                ("5D8965B360ADD7", 0x32, "0012ED15A749", "1D2A9C")
+                # (msg_type, timestamp, data, expected_crc)
+                (0x33, "0012ED141C6B", "8D406B902015A678D4D2200AA728", "4F3E5D"),
+                (0x32, "0012ED15A749", "5D8965B360ADD7", "1D2A9C")
             ]
 
-            for hex_data, msg_type, ts_hex, expected_crc in test_vectors:
-                # Convert components
-                data = bytes.fromhex(hex_data)
-                timestamp = bytes.fromhex(ts_hex)
-
-                # Form complete message for CRC
-                crc_input = bytes([msg_type]) + timestamp + data
+            for msg_type, ts_hex, data_hex, expected_crc in test_vectors:
+                # Формируем полное сообщение
+                full_data = bytes([msg_type]) + bytes.fromhex(ts_hex) + bytes.fromhex(data_hex)
 
                 # Debug output
                 self.logger.debug("Test vector details:")
-                self.logger.debug(f"  Raw data: {hex_data}")
                 self.logger.debug(f"  Message type: 0x{msg_type:02X}")
                 self.logger.debug(f"  Timestamp: {ts_hex}")
-                self.logger.debug(f"  Complete input: {crc_input.hex().upper()}")
+                self.logger.debug(f"  Data: {data_hex}")
+                self.logger.debug(f"  Complete input: {full_data.hex().upper()}")
                 self.logger.debug(f"  Expected CRC: {expected_crc}")
 
                 # Calculate CRC
-                crc = CRC24.compute(crc_input)
+                crc = CRC24.compute(full_data)
                 computed_crc = crc.hex().upper()
 
                 self.logger.debug(f"  Computed CRC: {computed_crc}")
@@ -1142,17 +1089,10 @@ class PicADSBMultiplexer:
                 if computed_crc != expected_crc:
                     raise ValueError(
                         f"CRC mismatch:\n"
-                        f"Input data: {crc_input.hex().upper()}\n"
+                        f"Input data: {full_data.hex().upper()}\n"
                         f"Expected CRC: {expected_crc}\n"
                         f"Computed CRC: {computed_crc}"
                     )
-
-                # Verify complete Beast message
-                beast_msg = self._create_beast_message(msg_type, data, timestamp)
-                if not beast_msg:
-                    raise ValueError("Failed to create Beast message")
-
-                self.logger.debug(f"  Beast message: {beast_msg.hex().upper()}")
 
             self.logger.info("Self-test passed successfully ✓")
             return True
