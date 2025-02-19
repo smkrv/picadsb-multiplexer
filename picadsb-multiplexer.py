@@ -1241,25 +1241,28 @@ class PicADSBMultiplexer:
         """
         test_vectors = [
             # Known valid ADS-B messages with correct CRC
-            ("8D152000004F90000000002D82E0", True),  # Valid DF17 message
-            ("8D4840D6202CC371C32CE0576098", True),  # Valid position message
-            ("8D4B1A00EA0DC492C5C2C1AD6B08", True),  # Valid velocity message
-            ("8D4CA4E5EA0B8C00000000D891D4", True),  # Valid identification message
+            ("8D152000004F90000000002D82E0", True),    # Valid DF17 message
+            ("8D4840D6202CC371C32CE0576098", True),    # Valid position message
+            ("8D40621D58C382D690C8AC2863A7", True),    # Valid airborne position
+            ("8DA4D53B580530AE4CA2231DC3D5", True)     # Valid surface position
         ]
 
         self.logger.info("Running CRC self-test...")
+        failed = False
 
         for hex_msg, expected_valid in test_vectors:
             try:
                 self.logger.debug(f"Testing message: {hex_msg}")
 
+                # Additional validation
+                if len(hex_msg) != 28:  # All ADS-B messages are 28 hex chars (14 bytes)
+                    self.logger.error(f"Invalid message length: {len(hex_msg)} chars")
+                    failed = True
+                    continue
+
                 # Verify using pyModeS directly
                 pms_valid = pms.common.crc(hex_msg) == 0
                 self.logger.debug(f"CRC validation result: {pms_valid}")
-
-                # Convert hex to bytes for our verification
-                msg_bytes = bytes.fromhex(hex_msg)
-                our_valid = CRC24.verify(msg_bytes)
 
                 if pms_valid != expected_valid:
                     self.logger.error(
@@ -1267,13 +1270,24 @@ class PicADSBMultiplexer:
                         f"  PyModeS validation: {pms_valid}\n"
                         f"  Expected valid: {expected_valid}"
                     )
-                    return False
+                    failed = True
+                    continue
+
+                # Additional pyModeS validations
+                df = pms.df(hex_msg)
+                if df != 17:  # All our test messages should be DF17 (ADS-B)
+                    self.logger.error(f"Invalid DF: {df} for message: {hex_msg}")
+                    failed = True
+                    continue
 
                 self.logger.debug(f"Test passed for message: {hex_msg}")
 
             except Exception as e:
                 self.logger.error(f"Test error for {hex_msg}: {e}")
                 return False
+
+        if failed:
+            return False
 
         self.logger.info("All CRC tests passed successfully")
         return True
