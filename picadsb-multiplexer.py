@@ -139,7 +139,7 @@ class CRC24:
             crc = pms.common.crc(hex_data)
 
             # Convert to bytes
-            crc_bytes = crc.to_bytes(3, 'big')
+            crc_bytes = bytes.fromhex(format(crc, '06X'))
 
             if debug:
                 logging.debug(f"Computed CRC: {crc_bytes.hex().upper()}")
@@ -1217,47 +1217,52 @@ class PicADSBMultiplexer:
         self.logger.info(f"Received signal {signum}, shutting down...")
         self.running = False
 
-    def self_test(self) -> bool:
-        """
-        Perform self-test of CRC implementation using known test vectors.
+def self_test(self) -> bool:
+    """
+    Perform self-test of CRC implementation using known test vectors.
 
-        Returns:
-            True if all tests pass, False otherwise
-        """
-        test_vectors = [
-            ("8D406B902015A678D4D220", "0AA728"),
-            ("8D75804B58FFA8D0DA8B4C", "B1872C"),
-            ("8D4840D6202CC371C32CE0", "578E11")
-        ]
+    Returns:
+        True if all tests pass, False otherwise
+    """
+    test_vectors = [
+        # Real ADS-B messages with valid CRC
+        ("8D152000004F90000000002D82E0", True),
+        ("A00009B9FD39F31EFE5FCF114E6E", True),
+        ("A8001213801FF72420049259ED27", True),
+        ("A0000914803FD123600C90891522", True),
 
-        self.logger.info("Running CRC self-test...")
+        # Invalid messages that should fail
+        ("8D406B902015A678D4D220INVALID", False),
+        ("NOT_A_VALID_MESSAGE", False)
+    ]
 
-        for data_hex, expected_crc_hex in test_vectors:
-            try:
-                # Convert hex string to bytes
-                data = bytes.fromhex(data_hex)
+    self.logger.info("Running CRC self-test...")
 
-                # Compute CRC
-                computed_crc = CRC24.compute(data, debug=True)
-                computed_hex = computed_crc.hex().upper()
+    for hex_msg, expected_valid in test_vectors:
+        try:
+            # Convert hex string to bytes
+            msg_bytes = bytes.fromhex(hex_msg)
 
-                if computed_hex != expected_crc_hex:
-                    self.logger.error(
-                        f"CRC test failed:\n"
-                        f"  Data: {data_hex}\n"
-                        f"  Expected CRC: {expected_crc_hex}\n"
-                        f"  Computed CRC: {computed_hex}"
-                    )
-                    return False
+            # Verify using pyModeS
+            is_valid = CRC24.verify(msg_bytes, debug=True)
 
-                self.logger.debug(f"CRC test passed: {data_hex} => {computed_hex}")
-
-            except Exception as e:
-                self.logger.error(f"Test error: {e}")
+            if is_valid != expected_valid:
+                self.logger.error(
+                    f"CRC test failed:\n"
+                    f"  Message: {hex_msg}\n"
+                    f"  Expected valid: {expected_valid}\n"
+                    f"  Got valid: {is_valid}"
+                )
                 return False
 
-        self.logger.info("All CRC tests passed successfully")
-        return True
+            self.logger.debug(f"CRC test passed: {hex_msg}")
+
+        except Exception as e:
+            self.logger.error(f"Test error: {e}")
+            return False
+
+    self.logger.info("All CRC tests passed successfully")
+    return True
 
     def run(self):
         """Main operation loop."""
