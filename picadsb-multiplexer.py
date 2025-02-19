@@ -112,12 +112,13 @@ class TimestampGenerator:
 
 class CRC24:
     """
-    CRC-24 implementation for ADS-B/Mode-S messages with:
-    1. Correct bit order (reverse before processing)
-    2. Proper polynomial 0x1FFF409 (MSB-first)
-    3. Parity bit removal
+    Finalized CRC-24 implementation for ADS-B/Mode-S with fixes:
+    1. Correct parity bit removal without shift
+    2. Proper 7-bit reversal
+    3. Fixed byte order in result
+    4. Proper bit positioning in CRC register
     """
-    POLYNOMIAL = 0x1FFF409  # Original ICAO Annex 10 polynomial
+    POLYNOMIAL = 0x1FFF409  # ICAO Annex 10 polynomial
     INIT = 0xFFFFFF        # Initial value
 
     @staticmethod
@@ -143,20 +144,20 @@ class CRC24:
         for i, byte in enumerate(data):
             # Remove parity bit and reverse bits
             original_byte = byte
-            byte = ((byte & 0xFE) << 1) & 0xFF  # Remove parity and shift
-            byte = int(f"{byte:08b}"[::-1], 2)  # Reverse bits
+            byte = (byte & 0xFE) >> 1  # Remove parity and shift right
+            reversed_bits = int(f"{byte:07b}"[::-1], 2)  # Reverse 7 bits
 
             if debug:
                 print(f"\nByte {i}: {original_byte:02X}")
-                print(f"  After parity removal and shift: {((original_byte & 0xFE) << 1) & 0xFF:02X}")
-                print(f"  After bit reversal: {byte:02X}")
+                print(f"  After parity removal: {byte:02X} ({byte:07b})")
+                print(f"  After 7-bit reversal: {reversed_bits:02X} ({reversed_bits:07b})")
 
-            crc ^= (byte << 16)
+            crc ^= (reversed_bits << 17)  # Position 7 bits correctly
 
             if debug:
                 print(f"  After XOR with shifted byte: {crc:06X}")
 
-            for bit in range(8):
+            for bit in range(7):  # Process 7 bits instead of 8
                 old_crc = crc
                 if crc & 0x800000:
                     crc = (crc << 1) ^ CRC24.POLYNOMIAL
@@ -168,24 +169,22 @@ class CRC24:
                     print(f"    Bit {bit}: {old_crc:06X} -> {crc:06X} " +
                           ("(XOR)" if old_crc & 0x800000 else "(shift)"))
 
-        if debug:
-            print(f"\nFinal CRC before byte order: {crc:06X}")
-            result = crc.to_bytes(3, 'little')
-            print(f"Final CRC after byte order: {result.hex().upper()}")
+        # Final bit reversal and byte ordering
+        final_crc = int(f"{crc:024b}"[::-1], 2)
 
-        return crc.to_bytes(3, 'little')
+        if debug:
+            print(f"\nFinal CRC before bit reversal: {crc:06X}")
+            print(f"After 24-bit reversal: {final_crc:06X}")
+            result = final_crc.to_bytes(3, 'big')
+            print(f"Final CRC: {result.hex().upper()}")
+
+        return final_crc.to_bytes(3, 'big')
 
     @staticmethod
     def verify(message: bytes, expected_crc: bytes) -> bool:
         """Verify message CRC."""
         computed = CRC24.compute(message)
         return computed == expected_crc
-
-    @staticmethod
-    def reverse_bits(byte: int) -> int:
-        """Reverse bits in a byte."""
-        return int(f"{byte:08b}"[::-1], 2)
-
 
 class PicADSBMultiplexer:
     """Main multiplexer class that handles device communication and client connections."""
