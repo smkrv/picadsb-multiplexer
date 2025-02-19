@@ -112,13 +112,10 @@ class TimestampGenerator:
 
 class CRC24:
     """
-    CRC-24 implementation for ADS-B/Mode-S messages.
-
-    Features:
-    - Uses ICAO Annex 10 polynomial 0x1FFF409
-    - Removes parity bit
-    - Proper initialization
-    - MSB-first processing
+    CRC-24 implementation for ADS-B/Mode-S messages with:
+    1. Correct bit order (reverse before processing)
+    2. Proper polynomial 0x1FFF409 (MSB-first)
+    3. Parity bit removal
     """
     POLYNOMIAL = 0x1FFF409  # Original ICAO Annex 10 polynomial
     INIT = 0xFFFFFF        # Initial value
@@ -126,11 +123,11 @@ class CRC24:
     @staticmethod
     def compute(data: bytes, debug: bool = False) -> bytes:
         """
-        Compute CRC-24 with optional debug output.
+        Compute CRC-24 with detailed debug output.
 
         Args:
             data: Input message bytes
-            debug: Enable detailed debug output
+            debug: Enable debug output
 
         Returns:
             3-byte CRC value
@@ -144,16 +141,20 @@ class CRC24:
             print("Processing bytes:")
 
         for i, byte in enumerate(data):
-            # Remove parity bit
-            byte = byte & 0xFE
+            # Remove parity bit and reverse bits
+            original_byte = byte
+            byte = ((byte & 0xFE) << 1) & 0xFF  # Remove parity and shift
+            byte = int(f"{byte:08b}"[::-1], 2)  # Reverse bits
 
             if debug:
-                print(f"\nByte {i}: {byte:02X} (original: {data[i]:02X}, parity removed)")
+                print(f"\nByte {i}: {original_byte:02X}")
+                print(f"  After parity removal and shift: {((original_byte & 0xFE) << 1) & 0xFF:02X}")
+                print(f"  After bit reversal: {byte:02X}")
 
             crc ^= (byte << 16)
 
             if debug:
-                print(f"After XOR with shifted byte: {crc:06X}")
+                print(f"  After XOR with shifted byte: {crc:06X}")
 
             for bit in range(8):
                 old_crc = crc
@@ -161,24 +162,72 @@ class CRC24:
                     crc = (crc << 1) ^ CRC24.POLYNOMIAL
                 else:
                     crc <<= 1
-                crc &= 0xFFFFFF  # Keep 24 bits
+                crc &= 0xFFFFFF
 
                 if debug:
-                    print(f"  Bit {bit}: {old_crc:06X} -> {crc:06X} " +
-                          ("(XOR with polynomial)" if old_crc & 0x800000 else "(shift only)"))
+                    print(f"    Bit {bit}: {old_crc:06X} -> {crc:06X} " +
+                          ("(XOR)" if old_crc & 0x800000 else "(shift)"))
 
         if debug:
-            print(f"\nFinal CRC before byte reversal: {crc:06X}")
-            result = crc.to_bytes(3, 'big')[::-1]
-            print(f"Final CRC after byte reversal: {result.hex().upper()}")
+            print(f"\nFinal CRC before byte order: {crc:06X}")
+            result = crc.to_bytes(3, 'little')
+            print(f"Final CRC after byte order: {result.hex().upper()}")
 
-        return crc.to_bytes(3, 'big')[::-1]
+        return crc.to_bytes(3, 'little')
 
     @staticmethod
     def verify(message: bytes, expected_crc: bytes) -> bool:
         """Verify message CRC."""
         computed = CRC24.compute(message)
         return computed == expected_crc
+
+    @staticmethod
+    def reverse_bits(byte: int) -> int:
+        """Reverse bits in a byte."""
+        return int(f"{byte:08b}"[::-1], 2)
+
+def self_test(self):
+    """Perform self-test with detailed diagnostics."""
+    self.logger.info("Performing self-test...")
+
+    try:
+        test_vectors = [
+            (0x33, "0012ED141C6B", "8D406B902015A678D4D2200AA728", "4F3E5D")
+        ]
+
+        for msg_type, ts, data, expected in test_vectors:
+            # Construct test message
+            msg = bytes([msg_type]) + bytes.fromhex(ts) + bytes.fromhex(data)
+
+            self.logger.debug(f"""
+Test vector details:
+  Message type: 0x{msg_type:02X}
+  Timestamp: {ts}
+  Data: {data}
+  Full message: {msg.hex().upper()}
+  Expected CRC: {expected}
+            """)
+
+            # Compute CRC with debug output
+            crc = CRC24.compute(msg, debug=True).hex().upper()
+
+            self.logger.debug(f"Computed CRC: {crc}")
+
+            if crc != expected:
+                raise ValueError(
+                    f"CRC mismatch:\n"
+                    f"Input: {msg.hex().upper()}\n"
+                    f"Expected CRC: {expected}\n"
+                    f"Computed CRC: {crc}"
+                )
+
+        self.logger.info("Self-test passed successfully ✓")
+        return True
+
+    except Exception as e:
+        self.logger.error(f"Self-test failed: {e}")
+        return False
+
 
 class PicADSBMultiplexer:
     """Main multiplexer class that handles device communication and client connections."""
@@ -1109,48 +1158,6 @@ class PicADSBMultiplexer:
             raise ValueError(f"Invalid long message length: {len(data)}")
         elif msg_type == BeastFormat.TYPE_MODES_SHORT and len(data) != 7:
             raise ValueError(f"Invalid short message length: {len(data)}")
-
-    def self_test(self):
-        """Perform self-test with detailed diagnostics."""
-        self.logger.info("Performing self-test...")
-
-        try:
-            test_vectors = [
-                (0x33, "0012ED141C6B", "8D406B902015A678D4D2200AA728", "4F3E5D")
-            ]
-
-            for msg_type, ts, data, expected in test_vectors:
-                # Construct test message
-                msg = bytes([msg_type]) + bytes.fromhex(ts) + bytes.fromhex(data)
-
-                self.logger.debug(f"""
-    Test vector details:
-      Message type: 0x{msg_type:02X}
-      Timestamp: {ts}
-      Data: {data}
-      Full message: {msg.hex().upper()}
-      Expected CRC: {expected}
-                """)
-
-                # Compute CRC with debug output
-                crc = CRC24.compute(msg, debug=True).hex().upper()
-
-                self.logger.debug(f"Computed CRC: {crc}")
-
-                if crc != expected:
-                    raise ValueError(
-                        f"CRC mismatch:\n"
-                        f"Input: {msg.hex().upper()}\n"
-                        f"Expected CRC: {expected}\n"
-                        f"Computed CRC: {crc}"
-                    )
-
-            self.logger.info("Self-test passed successfully ✓")
-            return True
-
-        except Exception as e:
-            self.logger.error(f"Self-test failed: {e}")
-            return False
 
     def _broadcast_message(self, data: bytes):
         """Broadcast data to all connected clients in Beast format."""
