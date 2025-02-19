@@ -113,27 +113,12 @@ class TimestampGenerator:
 class CRC24:
     """
     Final corrected CRC-24 implementation for ADS-B/Mode-S messages.
-    Features:
-    - Proper parity bit removal
-    - Correct 7-bit reversal
-    - Proper bit positioning
-    - Correct byte ordering (big-endian)
     """
-    POLYNOMIAL = 0x1FFF409  # ICAO Annex 10 polynomial
-    INIT = 0xFFFFFF        # Initial value
+    POLYNOMIAL = 0x1FFF409
+    INIT = 0xFFFFFF
 
     @staticmethod
     def compute(data: bytes, debug: bool = False) -> bytes:
-        """
-        Compute CRC-24 with detailed debug output.
-
-        Args:
-            data: Input message bytes
-            debug: Enable debug output
-
-        Returns:
-            3-byte CRC value in correct byte order
-        """
         crc = CRC24.INIT
 
         if debug:
@@ -162,23 +147,26 @@ class CRC24:
             # Process 7 bits
             for bit in range(7):
                 old_crc = crc
-                crc = (crc << 1) ^ (CRC24.POLYNOMIAL if crc & 0x800000 else 0)
-                crc &= 0xFFFFFF
+                if crc & 0x800000:
+                    crc = ((crc << 1) ^ CRC24.POLYNOMIAL) & 0xFFFFFF
+                else:
+                    crc = (crc << 1) & 0xFFFFFF
 
                 if debug:
                     print(f"    Bit {bit}: {old_crc:06X} -> {crc:06X} " +
                           ("(XOR)" if old_crc & 0x800000 else "(shift)"))
 
-        # Reverse all bits and use big-endian byte order
-        reversed_crc = int(f"{crc:024b}"[::-1], 2)
+        # Final transformations
+        crc = crc & 0xFFFFFF
+        # Reverse bits in each byte separately and swap byte order
+        crc_bytes = crc.to_bytes(3, 'big')
+        reversed_bytes = bytes(int(f"{b:08b}"[::-1], 2) for b in crc_bytes)
 
         if debug:
-            print(f"\nFinal CRC before bit reversal: {crc:06X}")
-            print(f"After 24-bit reversal: {reversed_crc:06X}")
-            result = reversed_crc.to_bytes(3, 'big')
-            print(f"Final CRC (big-endian): {result.hex().upper()}")
+            print(f"\nFinal CRC: {crc:06X}")
+            print(f"After byte-wise bit reversal: {reversed_bytes.hex().upper()}")
 
-        return reversed_crc.to_bytes(3, 'big')
+        return reversed_bytes
 
     @staticmethod
     def verify(message: bytes, expected_crc: bytes) -> bool:
