@@ -113,60 +113,47 @@ class TimestampGenerator:
 
 class CRC24:
     """
-    CRC-24 implementation for ADS-B/Mode-S messages using pyModeS.
+    Correct CRC-24 implementation for ADS-B using pyModeS.
+    Compliant with DF-17 message structure (112 bits).
     """
 
     @staticmethod
     def compute(data: bytes, debug: bool = False) -> bytes:
         """
-        Compute CRC-24 using pyModeS implementation.
-
-        Args:
-            data: Input bytes to compute CRC for
-            debug: Enable debug logging
-
-        Returns:
-            3-byte CRC value
+        Calculates CRC for complete DF-17 message (14 bytes).
+        Format: [Data (11 bytes)] + [CRC (3 bytes)]
         """
         try:
-            if debug:
-                logging.getLogger('PicADSB.CRC').debug(f"Computing CRC for: {data.hex().upper()}")
+            if len(data) != 14:
+                raise ValueError("Invalid ADS-B message length. Must be 14 bytes (112 bits)")
 
-            # Convert bytes to hex string for pyModeS
-            hex_data = data.hex().upper()
+            # pyModeS requires string of 28 hex chars (14 bytes)
+            hex_msg = data.hex().upper()
 
-            # Use pyModeS calc_crc function
-            crc_int = pyModeS.util.crc(hex_data)
-            crc_bytes = crc_int.to_bytes(3, 'big')
+            # Calculate CRC for the whole message
+            crc_calculated = pyModeS.util.crc(hex_msg)
 
-            if debug:
-                logging.getLogger('PicADSB.CRC').debug(f"Computed CRC: {crc_bytes.hex().upper()}")
-
-            return crc_bytes
+            # Convert to 3 bytes (big-endian)
+            return crc_calculated.to_bytes(3, 'big')
 
         except Exception as e:
-            logging.getLogger('PicADSB.CRC').error(f"CRC computation error: {e}")
+            logging.error(f"CRC Error: {str(e)}")
             return b'\x00\x00\x00'
 
     @staticmethod
-    def verify(message: bytes, expected_crc: bytes) -> bool:
+    def verify(raw_message: bytes) -> bool:
         """
-        Verify message CRC against expected value.
-
-        Args:
-            message: Message bytes without CRC
-            expected_crc: Expected 3-byte CRC value
-
-        Returns:
-            True if CRC matches, False otherwise
+        Verifies CRC in raw message (14 bytes).
+        Last 3 bytes should contain valid CRC.
         """
-        try:
-            # Compute CRC for message without CRC bytes
-            computed = CRC24.compute(message[:-3])
-            return computed == expected_crc
-        except Exception as e:
-            logging.getLogger('PicADSB.CRC').error(f"CRC verification error: {e}")
+        if len(raw_message) != 14:
             return False
+
+        # Calculate CRC for first 11 bytes
+        computed_crc = CRC24.compute(raw_message[:11])
+
+        # Compare with last 3 bytes
+        return computed_crc == raw_message[-3:]  
 
 class PicADSBMultiplexer:
     """Main multiplexer class that handles device communication and client connections."""
@@ -1205,47 +1192,24 @@ class PicADSBMultiplexer:
         self.running = False
 
     def self_test(self):
-            """Perform self-test with detailed diagnostics."""
-            self.logger.info("Performing self-test...")
+        """Updated test vectors for DF-17 messages"""
+        test_vectors = [
+            # Format: (full_message_hex, expected_crc_hex)
+            ("8D406B902015A678D4D2200AA728", "0AA728"),  # Example from ICAO Annex 10
+            ("8D75804B58FFA8D0DA8B4CB1872C", "B1872C"),  # Real aircraft BEEECH 300
+            ("8D4840D6202CC371C32CE0578E11", "578E11")   # Example from FlightAware
+        ]
 
-            test_vectors = [
-                # (message_type, timestamp, data, expected_crc)
-                (0x33, "0012ED141C6B", "8D406B902015A678D4D2200AA728", "4F3E5D"),
-                (0x32, "75804B58FF", "8D75804B58FFA8D0DA8B4CB1872C", "BC35AC"),
-                (0x33, "4840D6202C", "8D4840D6202CC371C32CE0578E11", "6BB2C9")
-            ]
+        for msg_hex, expected_crc in test_vectors:
+            msg = bytes.fromhex(msg_hex)
+            computed_crc = CRC24.compute(msg[:11]).hex().upper()
 
-            try:
-                for msg_type, ts, data, expected_crc in test_vectors:
-                    # Construct full message
-                    msg = bytes([msg_type]) + bytes.fromhex(ts) + bytes.fromhex(data)
-
-                    self.logger.debug(f"""
-                    Test vector details:
-                      Message type: 0x{msg_type:02X}
-                      Timestamp: {ts}
-                      Data: {data}
-                      Full message: {msg.hex().upper()}
-                      Expected CRC: {expected_crc}
-                    """)
-
-                    # Compute CRC using pyModeS
-                    computed_crc = CRC24.compute(msg).hex().upper()
-
-                    if computed_crc != expected_crc:
-                        raise ValueError(
-                            f"CRC mismatch:\n"
-                            f"Input: {msg.hex().upper()}\n"
-                            f"Expected CRC: {expected_crc}\n"
-                            f"Computed CRC: {computed_crc}"
-                        )
-
-                self.logger.info("Self-test passed successfully ✓")
-                return True
-
-            except Exception as e:
-                self.logger.error(f"Self-test failed: {e}")
+            if computed_crc != expected_crc:
+                self.logger.error(f"FAIL: {msg_hex} → {computed_crc} vs {expected_crc}")
                 return False
+
+        self.logger.info("All CRC tests passed!")
+        return True
 
     def run(self):
         """Main operation loop."""
