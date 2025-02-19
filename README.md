@@ -15,6 +15,9 @@ The device works perfectly on Raspberry Pi and other Unix-based systems, making 
 
 - Supports MicroADSB USB receivers (microADSB / adsbPIC)
 - Implements Beast Binary Format v2.0 for maximum compatibility
+- Advanced message validation using [pyModeS](https://github.com/junzis/pyModeS) library:
+  - Reliable CRC computation and verification
+  - Robust error detection
 - Dual-mode operation:
   - TCP server for multiple client connections
   - TCP client for forwarding data to remote servers
@@ -478,6 +481,7 @@ tail -f logs/adsb_muxer_*.log
 - Original adsbPIC creator & firmware by Joerg Bredendiek — [Sprut](https://sprut.de)
 - Original MicroADSB device by Miroslav Ionov
 - [dump1090](https://github.com/antirez/dump1090) project for ADS-B decoding
+- [pyModeS](https://github.com/junzis/pyModeS) The Python ADS-B/Mode-S Decoder
 
 ## Legal Disclaimer and Limitation of Liability  
 
