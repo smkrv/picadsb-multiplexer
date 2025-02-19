@@ -131,23 +131,26 @@ class CRC24:
             if debug:
                 print(f"Byte {i}: {byte:02X}")
 
-            # Remove parity bit and get 7 bits
+            # Remove parity bit
             byte_no_parity = (byte & 0xFE) >> 1
 
             # Reverse the 7 bits
-            reversed_byte = int(''.join(str((byte_no_parity >> i) & 1) for i in range(7))[::-1], 2)
+            reversed_byte = 0
+            for j in range(7):
+                if byte_no_parity & (1 << j):
+                    reversed_byte |= 1 << (6 - j)
 
             if debug:
                 print(f"  After parity removal (0xFE >> 1): {byte_no_parity:02X} ({format(byte_no_parity, '07b')})")
                 print(f"  After 7-bit reversal: {reversed_byte:02X} ({format(reversed_byte, '07b')})")
 
-            # XOR in the byte
+            # XOR the byte into the MSB of the CRC
             crc ^= (reversed_byte << 16)
 
             if debug:
                 print(f"  After XOR with shifted byte: {crc:06X}")
 
-            # Process 7 bits
+            # Process each bit
             for bit in range(7):
                 old_crc = crc
                 if crc & 0x800000:
@@ -158,12 +161,15 @@ class CRC24:
                 if debug:
                     print(f"    Bit {bit}: {old_crc:06X} -> {crc:06X}")
 
-        # Final bit reversal for each byte of the CRC
+        # Reverse bits in each byte of the final CRC
+        final_bytes = crc.to_bytes(3, 'big')
         result = 0
-        for i in range(3):
-            byte = (crc >> ((2 - i) * 8)) & 0xFF
-            # Reverse bits in byte
-            reversed_byte = int(''.join(str((byte >> j) & 1) for j in range(8))[::-1], 2)
+
+        for byte in final_bytes:
+            reversed_byte = 0
+            for j in range(8):
+                if byte & (1 << j):
+                    reversed_byte |= 1 << (7 - j)
             result = (result << 8) | reversed_byte
 
         if debug:
@@ -171,6 +177,12 @@ class CRC24:
             print(f"Final CRC after reversal: {result:06X}")
 
         return result.to_bytes(3, 'big')
+
+    @staticmethod
+    def verify(message: bytes, expected_crc: bytes) -> bool:
+        """Verify message CRC."""
+        computed = CRC24.compute(message[:-3])
+        return computed == expected_crc
 
 class PicADSBMultiplexer:
     """Main multiplexer class that handles device communication and client connections."""
@@ -1209,11 +1221,11 @@ class PicADSBMultiplexer:
         self.running = False
 
     def self_test(self):
-        """Perform self-test with multiple test vectors."""
+        """Perform self-test with detailed diagnostics."""
         self.logger.info("Performing self-test...")
 
         test_vectors = [
-            (0x33, "0012ED141C6B", "8D406B902015A678D4D2200AA728", "4F3E5D"),
+            (0x33, "0012ED141C6B", "8D406B902015A678D4D2200AA728", "4F3E5D")
         ]
 
         try:
@@ -1221,13 +1233,13 @@ class PicADSBMultiplexer:
                 msg = bytes([msg_type]) + bytes.fromhex(ts) + bytes.fromhex(data)
 
                 self.logger.debug(f"""
-            Test vector details:
-              Message type: 0x{msg_type:02X}
-              Timestamp: {ts}
-              Data: {data}
-              Full message: {msg.hex().upper()}
-              Expected CRC: {expected_crc}
-                    """)
+                Test vector details:
+                  Message type: 0x{msg_type:02X}
+                  Timestamp: {ts}
+                  Data: {data}
+                  Full message: {msg.hex().upper()}
+                  Expected CRC: {expected_crc}
+                        """)
 
                 computed_crc = CRC24.compute(msg, debug=True).hex().upper()
 
