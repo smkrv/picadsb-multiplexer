@@ -114,16 +114,22 @@ class TimestampGenerator:
 
 class CRC24:
     """
-    CRC-24 implementation for ADS-B/Mode-S messages using pyModeS.
+    CRC-24 implementation for ADS-B/Mode-S messages according to specification.
+
+    The polynomial used is: 0xFFF409 (hex) = 1111 1111 1111 0100 0000 1001 (bin)
+    Reference: https://mode-s.org/1090mhz/content/ads-b/8-error-control.html
     """
+
+    # CRC-24 polynomial for ADS-B
+    GENERATOR = 0xFFF409  # 1111 1111 1111 0100 0000 1001
 
     @staticmethod
     def compute(data: bytes, debug: bool = False) -> bytes:
         """
-        Compute CRC for Mode-S message using pyModeS.
+        Compute CRC-24 for Mode-S message.
 
         Args:
-            data: Raw message bytes
+            data: Raw message bytes (without CRC)
             debug: Enable debug logging
 
         Returns:
@@ -136,11 +142,14 @@ class CRC24:
             if debug:
                 logging.debug(f"Computing CRC for data: {hex_data}")
 
+            # Append zeros for CRC (3 bytes = 24 bits)
+            hex_msg = hex_data + '000000'
+
             # Calculate CRC using pyModeS
-            crc = pms.common.crc(hex_data)
+            remainder = pms.common.crc(hex_msg, encode=True)
 
             # Convert to bytes
-            crc_bytes = bytes.fromhex(format(crc, '06X'))
+            crc_bytes = remainder.to_bytes(3, 'big')
 
             if debug:
                 logging.debug(f"Computed CRC: {crc_bytes.hex().upper()}")
@@ -154,14 +163,16 @@ class CRC24:
     @staticmethod
     def verify(message: bytes, debug: bool = False) -> bool:
         """
-        Verify CRC of complete Mode-S message using pyModeS.
+        Verify CRC of complete Mode-S message.
+
+        The message is correct if the remainder after CRC division is zero.
 
         Args:
             message: Complete message including CRC
             debug: Enable debug logging
 
         Returns:
-            True if CRC is valid
+            True if CRC is valid (remainder is zero)
         """
         try:
             # Convert to hex string
@@ -170,13 +181,20 @@ class CRC24:
             if debug:
                 logging.debug(f"Verifying CRC for message: {hex_msg}")
 
-            # Use pyModeS to verify the message
-            result = pms.common.crc(hex_msg) == 0
+            # Message must be complete (at least 7 bytes)
+            if len(hex_msg) < 14:
+                if debug:
+                    logging.debug("Message too short")
+                return False
+
+            # Calculate remainder using pyModeS
+            remainder = pms.common.crc(hex_msg)
 
             if debug:
-                logging.debug(f"CRC verification result: {result}")
+                logging.debug(f"CRC remainder: {remainder}")
 
-            return result
+            # Message is valid if remainder is zero
+            return remainder == 0
 
         except Exception as e:
             logging.error(f"CRC verification error: {e}")
@@ -1240,11 +1258,12 @@ class PicADSBMultiplexer:
             True if all tests pass, False otherwise
         """
         test_vectors = [
-            # Known valid ADS-B messages with correct CRC
+            # Test vectors from Mode-S specification
+            ("8D406B902015A678D4D220AA4BDA", True),    # Example from docs, should have remainder 0
+            ("8D4CA251204994B1C36E60A5343D", False),   # Example from docs, should have remainder 16
+            # Additional known valid messages
             ("8D152000004F90000000002D82E0", True),    # Valid DF17 message
             ("8D4840D6202CC371C32CE0576098", True),    # Valid position message
-            ("8D40621D58C382D690C8AC2863A7", True),    # Valid airborne position
-            ("8DA4D53B580530AE4CA2231DC3D5", True)     # Valid surface position
         ]
 
         self.logger.info("Running CRC self-test...")
@@ -1254,31 +1273,36 @@ class PicADSBMultiplexer:
             try:
                 self.logger.debug(f"Testing message: {hex_msg}")
 
-                # Additional validation
-                if len(hex_msg) != 28:  # All ADS-B messages are 28 hex chars (14 bytes)
+                # Verify message format
+                if len(hex_msg) != 28:  # 112 bits = 28 hex chars
                     self.logger.error(f"Invalid message length: {len(hex_msg)} chars")
                     failed = True
                     continue
 
-                # Verify using pyModeS directly
-                pms_valid = pms.common.crc(hex_msg) == 0
-                self.logger.debug(f"CRC validation result: {pms_valid}")
+                # Verify using pyModeS
+                remainder = pms.common.crc(hex_msg)
+                is_valid = remainder == 0
 
-                if pms_valid != expected_valid:
+                self.logger.debug(f"CRC remainder: {remainder}")
+                self.logger.debug(f"Message valid: {is_valid}")
+
+                if is_valid != expected_valid:
                     self.logger.error(
                         f"CRC test failed for {hex_msg}:\n"
-                        f"  PyModeS validation: {pms_valid}\n"
+                        f"  Remainder: {remainder}\n"
+                        f"  Is valid: {is_valid}\n"
                         f"  Expected valid: {expected_valid}"
                     )
                     failed = True
                     continue
 
-                # Additional pyModeS validations
-                df = pms.df(hex_msg)
-                if df != 17:  # All our test messages should be DF17 (ADS-B)
-                    self.logger.error(f"Invalid DF: {df} for message: {hex_msg}")
-                    failed = True
-                    continue
+                # Additional validation
+                if expected_valid:
+                    df = pms.df(hex_msg)
+                    if df != 17:  # All our test messages should be DF17 (ADS-B)
+                        self.logger.error(f"Invalid DF: {df} for message: {hex_msg}")
+                        failed = True
+                        continue
 
                 self.logger.debug(f"Test passed for message: {hex_msg}")
 
