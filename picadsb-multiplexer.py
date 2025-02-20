@@ -999,23 +999,9 @@ class PicADSBMultiplexer:
             return None
 
     def _convert_to_beast(self, message: bytes) -> Optional[bytes]:
-        """
-        Convert raw ADS-B message to Beast format.
-
-        Args:
-            message: Raw message starting with '*' and ending with ';'
-
-        Returns:
-            Complete Beast message with escape sequences or None if invalid
-        """
         try:
             # Remove markers and convert to bytes
-            raw_data = message[1:-1].decode().strip(';')  # Remove ; before conversion
-
-            # Check for valid hex characters
-            if not all(c in '0123456789ABCDEFabcdef' for c in raw_data):
-                self.logger.debug(f"Invalid hex characters in: {raw_data}")
-                return None
+            raw_data = message[1:-1].decode().strip(';')
 
             # Convert to bytes
             try:
@@ -1028,27 +1014,26 @@ class PicADSBMultiplexer:
             timestamp = self.timestamp_gen.get_timestamp()
             signal_level = bytes([0xFF])
 
-            # Determine message type based on length
-            if len(data) == BeastFormat.MODES_SHORT_LEN:
+            # Determine message type and validate length
+            if len(data) == 7:  # Mode-S short
                 msg_type = BeastFormat.TYPE_MODES_SHORT
-            elif len(data) == BeastFormat.MODES_LONG_LEN:
+            elif len(data) == 14:  # Mode-S long
                 msg_type = BeastFormat.TYPE_MODES_LONG
             else:
-                self.logger.debug(f"Unsupported message length: {len(data)}")
+                self.logger.debug(f"Unsupported data length: {len(data)}")
                 return None
 
-            # Construct complete message for CRC
-            msg_for_crc = bytes([msg_type]) + timestamp + signal_level + data
+            # Build message
+            message = bytearray()
+            message.append(BeastFormat.ESCAPE)  # Start marker
+            message.append(msg_type)  # Message type
+            message.extend(timestamp)  # 6 bytes timestamp
+            message.append(0xFF)  # Signal level
+            message.extend(data)  # ADS-B data
 
-            # Calculate CRC using pyModeS
-            crc = CRC24.compute(msg_for_crc)
-            if not crc:
-                return None
-
-            # Build final message with escape sequences
-            message = bytearray([BeastFormat.ESCAPE])  # Start marker
-            message.extend(msg_for_crc)  # Type + timestamp + signal + data
-            message.extend(crc)  # Add CRC
+            # Calculate CRC
+            crc = CRC24.compute(bytes(message[1:]))  # CRC of everything after escape
+            message.append(crc[0])  # Add single CRC byte
 
             # Apply escape sequences
             final_msg = self._escape_beast_data(bytes(message))
@@ -1064,15 +1049,8 @@ class PicADSBMultiplexer:
         """
         Validate Beast format message structure and integrity.
 
-        Checks:
-        - Message length
-        - Start marker
-        - Message type
-        - Data length per type
-        - CRC validity
-
         Args:
-            message: Complete Beast message
+            message: Complete Beast message with escape sequences
 
         Returns:
             True if message is valid
@@ -1082,40 +1060,42 @@ class PicADSBMultiplexer:
             unescaped = self._unescape_beast_data(message)
 
             # Basic structure checks
-            if len(unescaped) < 11:
-                self.logger.debug("Message too short")
+            if len(unescaped) < 11:  # Minimum length for any Beast message
+                self.logger.debug(f"Message too short after unescaping: {len(unescaped)}")
                 return False
 
             if unescaped[0] != BeastFormat.ESCAPE:
-                self.logger.debug("Invalid escape byte")
+                self.logger.debug("Invalid start byte")
                 return False
 
-            # Validate message type and length
+            # Get message type
             msg_type = unescaped[1]
+
+            # Calculate expected length after unescaping
             if msg_type == BeastFormat.TYPE_MODEA:
-                required_len = 12  # 1 + 1 + 6 + 1 + 2 + 3
+                expected_len = 12  # 1(ESC) + 1(type) + 6(timestamp) + 1(signal) + 2(data) + 1(crc)
             elif msg_type == BeastFormat.TYPE_MODES_SHORT:
-                required_len = 17  # 1 + 1 + 6 + 1 + 7 + 3
+                expected_len = 17  # 1(ESC) + 1(type) + 6(timestamp) + 1(signal) + 7(data) + 1(crc)
             elif msg_type == BeastFormat.TYPE_MODES_LONG:
-                required_len = 24  # 1 + 1 + 6 + 1 + 14 + 3
+                expected_len = 24  # 1(ESC) + 1(type) + 6(timestamp) + 1(signal) + 14(data) + 1(crc)
             else:
                 self.logger.debug(f"Invalid message type: 0x{msg_type:02X}")
                 return False
 
-            if len(unescaped) != required_len:
-                self.logger.debug(f"Invalid message length for type 0x{msg_type:02X}: {len(unescaped)}")
+            if len(unescaped) != expected_len:
+                self.logger.debug(f"Invalid unescaped length for type 0x{msg_type:02X}: {len(unescaped)}, expected {expected_len}")
                 return False
 
             # Extract components
             timestamp = unescaped[2:8]
             signal_level = unescaped[8]
-            data_end = -3  # Last 3 bytes are CRC
+            data_end = -1  # Last byte is CRC
             data = unescaped[9:data_end]
             received_crc = unescaped[data_end:]
 
             # Validate CRC
-            crc_input = bytes([msg_type]) + timestamp + bytes([signal_level]) + data
-            calculated_crc = CRC24.compute(crc_input)
+            msg_for_crc = bytes([msg_type]) + timestamp + bytes([signal_level]) + data
+            calculated_crc = CRC24.compute(msg_for_crc)
 
             if calculated_crc != received_crc:
                 self.logger.debug(f"CRC mismatch: calculated {calculated_crc.hex()}, received {received_crc.hex()}")
