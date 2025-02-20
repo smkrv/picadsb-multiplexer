@@ -106,7 +106,7 @@ class CRC24:
             calculated_crc = CRC24.compute(data)
 
             if debug:
-                logging.debug(f"CRC verification: calculated={calculated_crc:02X}, received={received_crc:02X}")
+                logging.debug(f"CRC verification: calculated=0x{calculated_crc:02X}, received=0x{received_crc:02X}")
 
             return calculated_crc == received_crc
 
@@ -1103,22 +1103,8 @@ class PicADSBMultiplexer:
                 self.logger.debug(f"Invalid unescaped length for type 0x{msg_type:02X}: {len(unescaped)}, expected {expected_len}")
                 return False
 
-            # Extract components
-            timestamp = unescaped[2:8]
-            signal_level = unescaped[8]
-            data_end = -1  # Last byte is CRC
-            data = unescaped[9:data_end]
-            received_crc = unescaped[data_end:]
-
-            # Validate CRC
-            msg_for_crc = bytes([msg_type]) + timestamp + bytes([signal_level]) + data
-            calculated_crc = CRC24.compute(msg_for_crc)
-
-            if calculated_crc != received_crc:
-                self.logger.debug(f"CRC mismatch: calculated {calculated_crc.hex()}, received {received_crc.hex()}")
-                return False
-
-            return True
+            # Verify CRC
+            return CRC24.verify(unescaped[1:], debug=True)  # Skip escape byte for CRC verification
 
         except Exception as e:
             self.logger.error(f"Beast message validation error: {e}")
