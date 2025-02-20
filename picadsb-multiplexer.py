@@ -44,11 +44,6 @@ from typing import Optional, Dict, Any, List, Tuple
 class CRC24:
     """
     CRC-24 implementation using pyModeS for ADS-B/Mode-S messages.
-
-    Features:
-    - Hardware-optimized CRC calculation via pyModeS
-    - Validation against known test vectors
-    - Debug logging support
     """
 
     @staticmethod
@@ -111,17 +106,6 @@ class CRC24:
             # Use pyModeS for validation
             remainder = pms.common.crc(hex_msg)
 
-            # Additional validation for known message types
-            if remainder == 0:
-                try:
-                    df = pms.df(hex_msg)
-                    if df not in (0, 4, 5, 11, 16, 17, 20, 21):
-                        if debug:
-                            logging.debug(f"Unknown DF: {df}")
-                        return False
-                except:
-                    pass
-
             if debug:
                 logging.debug(f"CRC remainder: {remainder}")
 
@@ -154,66 +138,66 @@ class BeastFormat:
     # Maximum value for 6-byte timestamp (2^48-1)
     MAX_TIMESTAMP = 0xFFFFFFFFFFFF
 
-def _create_beast_message(self, msg_type: int, data: bytes, timestamp: bytes = None) -> bytes:
-    """
-    Create Beast format message with proper structure and CRC.
+    def _create_beast_message(self, msg_type: int, data: bytes, timestamp: bytes = None) -> bytes:
+        """
+        Create Beast format message with proper structure and CRC.
 
-    Args:
-        msg_type: Message type (0x32 for short or 0x33 for long)
-        data: Raw Mode-S message data
-        timestamp: Optional 6-byte timestamp (generated if None)
+        Args:
+            msg_type: Message type (0x32 for short or 0x33 for long)
+            data: Raw Mode-S message data
+            timestamp: Optional 6-byte timestamp (generated if None)
 
-    Returns:
-        Complete Beast message with escape sequences and CRC
+        Returns:
+            Complete Beast message with escape sequences and CRC
 
-    Raises:
-        ValueError: If input validation fails
-    """
-    try:
-        # Input validation
-        if not isinstance(data, bytes):
-            raise ValueError("Data must be bytes")
+        Raises:
+            ValueError: If input validation fails
+        """
+        try:
+            # Input validation
+            if not isinstance(data, bytes):
+                raise ValueError("Data must be bytes")
 
-        # Validate message type and length
-        if msg_type not in (BeastFormat.TYPE_MODES_SHORT, BeastFormat.TYPE_MODES_LONG):
-            raise ValueError(f"Invalid message type: 0x{msg_type:02X}")
+            # Validate message type and length
+            if msg_type not in (BeastFormat.TYPE_MODES_SHORT, BeastFormat.TYPE_MODES_LONG):
+                raise ValueError(f"Invalid message type: 0x{msg_type:02X}")
 
-        self._validate_message_length(msg_type, data)
+            self._validate_message_length(msg_type, data)
 
-        # Use provided timestamp or generate new
-        if timestamp is None:
-            timestamp = self.timestamp_gen.get_timestamp()
-        elif len(timestamp) != BeastFormat.TIMESTAMP_LEN:
-            raise ValueError(f"Invalid timestamp length: {len(timestamp)}")
+            # Use provided timestamp or generate new
+            if timestamp is None:
+                timestamp = self.timestamp_gen.get_timestamp()
+            elif len(timestamp) != BeastFormat.TIMESTAMP_LEN:
+                raise ValueError(f"Invalid timestamp length: {len(timestamp)}")
 
-        # Form message for CRC calculation
-        crc_input = bytes([msg_type]) + timestamp + data
+            # Form message for CRC calculation
+            crc_input = bytes([msg_type]) + timestamp + data
 
-        # Calculate CRC using pyModeS
-        crc = CRC24.compute(crc_input)
+            # Calculate CRC using pyModeS
+            crc = CRC24.compute(crc_input)
 
-        # Debug logging
-        self.logger.debug("Beast message components:")
-        self.logger.debug(f"  Type: 0x{msg_type:02X}")
-        self.logger.debug(f"  Timestamp: {timestamp.hex().upper()}")
-        self.logger.debug(f"  Data: {data.hex().upper()}")
-        self.logger.debug(f"  CRC input: {crc_input.hex().upper()}")
-        self.logger.debug(f"  CRC: {crc.hex().upper()}")
+            # Debug logging
+            self.logger.debug("Beast message components:")
+            self.logger.debug(f"  Type: 0x{msg_type:02X}")
+            self.logger.debug(f"  Timestamp: {timestamp.hex().upper()}")
+            self.logger.debug(f"  Data: {data.hex().upper()}")
+            self.logger.debug(f"  CRC input: {crc_input.hex().upper()}")
+            self.logger.debug(f"  CRC: {crc.hex().upper()}")
 
-        # Assemble final message with escape sequences
-        message = bytearray()
-        message.append(BeastFormat.ESCAPE)
-        message.append(msg_type)
-        message.extend(timestamp)
-        message.extend(data)
-        message.extend(crc)
+            # Assemble final message with escape sequences
+            message = bytearray()
+            message.append(BeastFormat.ESCAPE)
+            message.append(msg_type)
+            message.extend(timestamp)
+            message.extend(data)
+            message.extend(crc)
 
-        # Apply escape sequences and return
-        return self._escape_beast_data(bytes(message))
+            # Apply escape sequences and return
+            return self._escape_beast_data(bytes(message))
 
-    except Exception as e:
-        self.logger.error(f"Beast message creation failed: {e}")
-        return None
+        except Exception as e:
+            self.logger.error(f"Beast message creation failed: {e}")
+            return None
 
 class TimestampGenerator:
     """Generates monotonic timestamps for Beast format messages."""
