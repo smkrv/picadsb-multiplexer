@@ -998,10 +998,16 @@ class PicADSBMultiplexer:
             # Apply escape sequences
             escaped_message = self._escape_beast_data(bytes(message_without_escape))
 
+            # Log the final message
+            self.logger.debug(f"Final Beast message: {escaped_message.hex().upper()}")
+
             return escaped_message
 
+        except ValueError as ve:
+            self.logger.error(f"ValueError in _create_beast_message: {ve}")
+            return None
         except Exception as e:
-            self.logger.error(f"Beast message creation failed: {e}")
+            self.logger.error(f"Error in _create_beast_message: {e}")
             return None
 
     def _convert_to_beast(self, message: bytes) -> Optional[bytes]:
@@ -1017,6 +1023,16 @@ class PicADSBMultiplexer:
         try:
             # Remove markers and convert to hex
             raw_data = message[1:-1].decode().strip()
+
+            # Log the raw data for debugging
+            self.logger.debug(f"Raw data: {raw_data}")
+
+            # Check if the raw data contains only hexadecimal characters
+            if not all(c in '0123456789ABCDEFabcdef' for c in raw_data):
+                self.logger.error(f"Invalid hex data: {raw_data}")
+                return None
+
+            # Convert hex string to bytes
             data = bytes.fromhex(raw_data)
 
             # Determine message type
@@ -1035,6 +1051,9 @@ class PicADSBMultiplexer:
 
             return beast_msg
 
+        except ValueError as ve:
+            self.logger.error(f"ValueError during conversion: {ve}")
+            return None
         except Exception as e:
             self.logger.error(f"Conversion to Beast format failed: {e}")
             return None
