@@ -59,23 +59,9 @@ class CRC24:
             3-byte CRC value
         """
         try:
-            # Convert input bytes to hex string for pyModeS
             hex_data = data.hex().upper()
-
-            if debug:
-                logging.debug(f"Computing CRC for data: {hex_data}")
-
-            # Calculate CRC using pyModeS's optimized implementation
-            remainder = pms.common.crc(hex_data, encode=True)
-
-            # Convert to bytes
-            crc_bytes = remainder.to_bytes(3, 'big')
-
-            if debug:
-                logging.debug(f"Computed CRC: {crc_bytes.hex().upper()}")
-
-            return crc_bytes
-
+            remainder = pms.common.crc(hex_data)
+            return remainder.to_bytes(3, 'big')
         except Exception as e:
             logging.error(f"CRC computation error: {e}")
             return b"\x00\x00\x00"
@@ -94,23 +80,9 @@ class CRC24:
         """
         try:
             hex_msg = message.hex().upper()
-
-            if debug:
-                logging.debug(f"Verifying CRC for message: {hex_msg}")
-
-            if len(hex_msg) < 14:
-                if debug:
-                    logging.debug("Message too short")
+            if len(hex_msg) % 2 != 0 or len(hex_msg) < 14:
                 return False
-
-            # Use pyModeS for validation
-            remainder = pms.common.crc(hex_msg)
-
-            if debug:
-                logging.debug(f"CRC remainder: {remainder}")
-
-            return remainder == 0
-
+            return pms.common.crc(hex_msg) == 0
         except Exception as e:
             logging.error(f"CRC verification error: {e}")
             return False
@@ -920,21 +892,20 @@ class PicADSBMultiplexer:
         """
         Apply Beast format escape sequences.
 
-        When 0x1A appears in data, it must be escaped as 0x1A 0x1A.
-
         Args:
             data: Raw message bytes
 
         Returns:
             Escaped message bytes
         """
-        escaped_data = bytearray()
+        escaped = bytearray()
         for byte in data:
             if byte == BeastFormat.ESCAPE:
-                escaped_data.extend([BeastFormat.ESCAPE, BeastFormat.ESCAPE])
+                escaped.append(BeastFormat.ESCAPE)
+                escaped.append(BeastFormat.ESCAPE)
             else:
-                escaped_data.append(byte)
-        return bytes(escaped_data)
+                escaped.append(byte)
+        return bytes(escaped)
 
     def _unescape_beast_data(self, data: bytes) -> bytes:
         """
@@ -963,51 +934,29 @@ class PicADSBMultiplexer:
         return bytes(unescaped_data)
 
     def _create_beast_message(self, msg_type: int, data: bytes, timestamp: bytes = None) -> bytes:
-        """
-        Create Beast format message with proper structure and CRC.
-
-        Args:
-            msg_type: Message type (0x32 for short or 0x33 for long)
-            data: Raw Mode-S message data
-            timestamp: Optional 6-byte timestamp (generated if None)
-
-        Returns:
-            Complete Beast message with escape sequences
-        """
         try:
-            # Validate input
-            if msg_type not in (BeastFormat.TYPE_MODES_SHORT, BeastFormat.TYPE_MODES_LONG):
-                raise ValueError(f"Invalid message type: 0x{msg_type:02X}")
+            timestamp = self.timestamp_gen.get_timestamp() if timestamp is None else timestamp
 
-            if timestamp is None:
-                timestamp = self.timestamp_gen.get_timestamp()
-            elif len(timestamp) != BeastFormat.TIMESTAMP_LEN:
-                raise ValueError(f"Invalid timestamp length: {len(timestamp)}")
+            crc_input = bytes([msg_type]) + timestamp + data
+            crc = CRC24.compute(crc_input)
 
-            # Form the message without escape sequences
-            message_without_escape = bytearray()
-            message_without_escape.append(BeastFormat.ESCAPE)
-            message_without_escape.append(msg_type)
-            message_without_escape.extend(timestamp)
-            message_without_escape.extend(data)
-
-            # Calculate CRC
-            crc = CRC24.compute(message_without_escape[1:])  # Exclude the initial escape byte for CRC calculation
-            message_without_escape.extend(crc)
+            message = bytearray()
+            message.append(BeastFormat.ESCAPE)
+            message.append(msg_type)
+            message.extend(timestamp)
+            message.extend(data)
+            message.extend(crc)
 
             # Apply escape sequences
-            escaped_message = self._escape_beast_data(bytes(message_without_escape))
+            escaped_message = self._escape_beast_data(bytes(message))
 
             # Log the final message
             self.logger.debug(f"Final Beast message: {escaped_message.hex().upper()}")
 
             return escaped_message
 
-        except ValueError as ve:
-            self.logger.error(f"ValueError in _create_beast_message: {ve}")
-            return None
         except Exception as e:
-            self.logger.error(f"Error in _create_beast_message: {e}")
+            self.logger.error(f"Beast creation error: {e}")
             return None
 
     def _convert_to_beast(self, message: bytes) -> Optional[bytes]:
@@ -1021,41 +970,28 @@ class PicADSBMultiplexer:
             Complete Beast message with escape sequences
         """
         try:
-            # Remove markers and convert to hex
             raw_data = message[1:-1].decode().strip()
 
-            # Log the raw data for debugging
-            self.logger.debug(f"Raw data: {raw_data}")
+            if len(raw_data) % 2 != 0:
+                self.logger.error(f"Invalid hex length: {len(raw_data)}")
+                return None
 
             # Check if the raw data contains only hexadecimal characters
             if not all(c in '0123456789ABCDEFabcdef' for c in raw_data):
                 self.logger.error(f"Invalid hex data: {raw_data}")
                 return None
 
-            # Convert hex string to bytes
             data = bytes.fromhex(raw_data)
 
-            # Determine message type
-            if len(data) == BeastFormat.MODES_SHORT_LEN:
-                msg_type = BeastFormat.TYPE_MODES_SHORT
-            elif len(data) == BeastFormat.MODES_LONG_LEN:
-                msg_type = BeastFormat.TYPE_MODES_LONG
-            else:
-                raise ValueError(f"Invalid message length: {len(data)}")
+            if len(data) not in (BeastFormat.MODES_SHORT_LEN, BeastFormat.MODES_LONG_LEN):
+                self.logger.error(f"Invalid data length: {len(data)}")
+                return None
 
-            # Generate timestamp
-            timestamp = self.timestamp_gen.get_timestamp()
+            msg_type = BeastFormat.TYPE_MODES_SHORT if len(data) == BeastFormat.MODES_SHORT_LEN else BeastFormat.TYPE_MODES_LONG
+            return self._create_beast_message(msg_type, data)
 
-            # Create Beast message
-            beast_msg = self._create_beast_message(msg_type, data, timestamp)
-
-            return beast_msg
-
-        except ValueError as ve:
-            self.logger.error(f"ValueError during conversion: {ve}")
-            return None
-        except Exception as e:
-            self.logger.error(f"Conversion to Beast format failed: {e}")
+        except (ValueError, UnicodeDecodeError) as e:
+            self.logger.error(f"Conversion error: {e}")
             return None
 
     def _validate_beast_message(self, message: bytes) -> bool:
