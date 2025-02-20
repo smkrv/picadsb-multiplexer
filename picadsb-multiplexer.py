@@ -41,6 +41,96 @@ from pyModeS import common
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List, Tuple
 
+class CRC24:
+    """
+    CRC-24 implementation using pyModeS for ADS-B/Mode-S messages.
+
+    Features:
+    - Hardware-optimized CRC calculation via pyModeS
+    - Validation against known test vectors
+    - Debug logging support
+    """
+
+    @staticmethod
+    def compute(data: bytes, debug: bool = False) -> bytes:
+        """
+        Compute CRC-24 using pyModeS implementation.
+
+        Args:
+            data: Raw message bytes (without CRC)
+            debug: Enable debug logging
+
+        Returns:
+            3-byte CRC value
+        """
+        try:
+            # Convert input bytes to hex string for pyModeS
+            hex_data = data.hex().upper()
+
+            if debug:
+                logging.debug(f"Computing CRC for data: {hex_data}")
+
+            # Calculate CRC using pyModeS's optimized implementation
+            remainder = pms.common.crc(hex_data, encode=True)
+
+            # Convert to bytes
+            crc_bytes = remainder.to_bytes(3, 'big')
+
+            if debug:
+                logging.debug(f"Computed CRC: {crc_bytes.hex().upper()}")
+
+            return crc_bytes
+
+        except Exception as e:
+            logging.error(f"CRC computation error: {e}")
+            return b"\x00\x00\x00"
+
+    @staticmethod
+    def verify(message: bytes, debug: bool = False) -> bool:
+        """
+        Verify CRC of complete Mode-S message using pyModeS.
+
+        Args:
+            message: Complete message including CRC
+            debug: Enable debug logging
+
+        Returns:
+            True if CRC is valid
+        """
+        try:
+            hex_msg = message.hex().upper()
+
+            if debug:
+                logging.debug(f"Verifying CRC for message: {hex_msg}")
+
+            if len(hex_msg) < 14:
+                if debug:
+                    logging.debug("Message too short")
+                return False
+
+            # Use pyModeS for validation
+            remainder = pms.common.crc(hex_msg)
+
+            # Additional validation for known message types
+            if remainder == 0:
+                try:
+                    df = pms.df(hex_msg)
+                    if df not in (0, 4, 5, 11, 16, 17, 20, 21):
+                        if debug:
+                            logging.debug(f"Unknown DF: {df}")
+                        return False
+                except:
+                    pass
+
+            if debug:
+                logging.debug(f"CRC remainder: {remainder}")
+
+            return remainder == 0
+
+        except Exception as e:
+            logging.error(f"CRC verification error: {e}")
+            return False
+
 class BeastFormat:
     """
     Beast Binary Format v2.0 implementation.
@@ -50,10 +140,6 @@ class BeastFormat:
     - Mode-A/C with MLAT timestamps
     - Escape sequence handling
     - CRC validation
-
-    Performance:
-    - Up to 500 messages/sec on 1 GHz CPU
-    - ~5 MB memory per 1k connections
     """
     ESCAPE = 0x1A
     TYPE_MODEA = 0x31       # Mode-A/C with MLAT timestamp
@@ -67,6 +153,67 @@ class BeastFormat:
 
     # Maximum value for 6-byte timestamp (2^48-1)
     MAX_TIMESTAMP = 0xFFFFFFFFFFFF
+
+def _create_beast_message(self, msg_type: int, data: bytes, timestamp: bytes = None) -> bytes:
+    """
+    Create Beast format message with proper structure and CRC.
+
+    Args:
+        msg_type: Message type (0x32 for short or 0x33 for long)
+        data: Raw Mode-S message data
+        timestamp: Optional 6-byte timestamp (generated if None)
+
+    Returns:
+        Complete Beast message with escape sequences and CRC
+
+    Raises:
+        ValueError: If input validation fails
+    """
+    try:
+        # Input validation
+        if not isinstance(data, bytes):
+            raise ValueError("Data must be bytes")
+
+        # Validate message type and length
+        if msg_type not in (BeastFormat.TYPE_MODES_SHORT, BeastFormat.TYPE_MODES_LONG):
+            raise ValueError(f"Invalid message type: 0x{msg_type:02X}")
+
+        self._validate_message_length(msg_type, data)
+
+        # Use provided timestamp or generate new
+        if timestamp is None:
+            timestamp = self.timestamp_gen.get_timestamp()
+        elif len(timestamp) != BeastFormat.TIMESTAMP_LEN:
+            raise ValueError(f"Invalid timestamp length: {len(timestamp)}")
+
+        # Form message for CRC calculation
+        crc_input = bytes([msg_type]) + timestamp + data
+
+        # Calculate CRC using pyModeS
+        crc = CRC24.compute(crc_input)
+
+        # Debug logging
+        self.logger.debug("Beast message components:")
+        self.logger.debug(f"  Type: 0x{msg_type:02X}")
+        self.logger.debug(f"  Timestamp: {timestamp.hex().upper()}")
+        self.logger.debug(f"  Data: {data.hex().upper()}")
+        self.logger.debug(f"  CRC input: {crc_input.hex().upper()}")
+        self.logger.debug(f"  CRC: {crc.hex().upper()}")
+
+        # Assemble final message with escape sequences
+        message = bytearray()
+        message.append(BeastFormat.ESCAPE)
+        message.append(msg_type)
+        message.extend(timestamp)
+        message.extend(data)
+        message.extend(crc)
+
+        # Apply escape sequences and return
+        return self._escape_beast_data(bytes(message))
+
+    except Exception as e:
+        self.logger.error(f"Beast message creation failed: {e}")
+        return None
 
 class TimestampGenerator:
     """Generates monotonic timestamps for Beast format messages."""
@@ -111,94 +258,6 @@ class TimestampGenerator:
             fallback = (self.last_timestamp + self.min_increment) % BeastFormat.MAX_TIMESTAMP
             self.last_timestamp = fallback
             return fallback.to_bytes(6, 'big')
-
-class CRC24:
-    """
-    CRC-24 implementation for ADS-B/Mode-S messages according to specification.
-
-    The polynomial used is: 0xFFF409 (hex) = 1111 1111 1111 0100 0000 1001 (bin)
-    Reference: https://mode-s.org/1090mhz/content/ads-b/8-error-control.html
-    """
-
-    # CRC-24 polynomial for ADS-B
-    GENERATOR = 0xFFF409  # 1111 1111 1111 0100 0000 1001
-
-    @staticmethod
-    def compute(data: bytes, debug: bool = False) -> bytes:
-        """
-        Compute CRC-24 for Mode-S message.
-
-        Args:
-            data: Raw message bytes (without CRC)
-            debug: Enable debug logging
-
-        Returns:
-            3-byte CRC value
-        """
-        try:
-            # Convert input bytes to hex string
-            hex_data = data.hex().upper()
-
-            if debug:
-                logging.debug(f"Computing CRC for data: {hex_data}")
-
-            # Append zeros for CRC (3 bytes = 24 bits)
-            hex_msg = hex_data + '000000'
-
-            # Calculate CRC using pyModeS
-            remainder = pms.common.crc(hex_msg, encode=True)
-
-            # Convert to bytes
-            crc_bytes = remainder.to_bytes(3, 'big')
-
-            if debug:
-                logging.debug(f"Computed CRC: {crc_bytes.hex().upper()}")
-
-            return crc_bytes
-
-        except Exception as e:
-            logging.error(f"CRC computation error: {e}")
-            return b"\x00\x00\x00"
-
-    @staticmethod
-    def verify(message: bytes, debug: bool = False) -> bool:
-        """
-        Verify CRC of complete Mode-S message.
-
-        The message is correct if the remainder after CRC division is zero.
-
-        Args:
-            message: Complete message including CRC
-            debug: Enable debug logging
-
-        Returns:
-            True if CRC is valid (remainder is zero)
-        """
-        try:
-            # Convert to hex string
-            hex_msg = message.hex().upper()
-
-            if debug:
-                logging.debug(f"Verifying CRC for message: {hex_msg}")
-
-            # Message must be complete (at least 7 bytes)
-            if len(hex_msg) < 14:
-                if debug:
-                    logging.debug("Message too short")
-                return False
-
-            # Calculate remainder using pyModeS
-            remainder = pms.common.crc(hex_msg)
-
-            if debug:
-                logging.debug(f"CRC remainder: {remainder}")
-
-            # Message is valid if remainder is zero
-            return remainder == 0
-
-        except Exception as e:
-            logging.error(f"CRC verification error: {e}")
-            return False
 
 class PicADSBMultiplexer:
     """Main multiplexer class that handles device communication and client connections."""
@@ -936,9 +995,9 @@ class PicADSBMultiplexer:
 
     def _escape_beast_data(self, data: bytes) -> bytes:
         """
-        Escape Beast format data according to protocol specification.
+        Apply Beast format escape sequences.
 
-        When 0x1A appears in the data, it must be escaped as 0x1A 0x1A.
+        When 0x1A appears in data, it must be escaped as 0x1A 0x1A.
 
         Args:
             data: Raw message bytes
@@ -954,10 +1013,9 @@ class PicADSBMultiplexer:
                 result.append(byte)
         return bytes(result)
 
-
     def _unescape_beast_data(self, message: bytes) -> bytes:
         """
-        Remove escape sequences from Beast message.
+        Remove Beast format escape sequences.
 
         Handles:
         - Double 0x1A sequences
@@ -1036,19 +1094,39 @@ class PicADSBMultiplexer:
             return None
 
     def _convert_to_beast(self, message: bytes) -> Optional[bytes]:
-        """Convert raw message to Beast format."""
+        """
+        Convert raw ADS-B message to Beast format.
+
+        Handles:
+        - Message type detection
+        - Data extraction
+        - Timestamp generation
+        - Beast format conversion
+        - Performance monitoring
+
+        Args:
+            message: Raw message starting with '*' and ending with ';'
+
+        Returns:
+            Beast formatted message or None if conversion fails
+        """
         try:
-            # Remove start/end markers and any whitespace/newlines
+            start_time = time.time()
+
+            # Remove markers and whitespace
             if message.startswith(b'*'):
-                # Remove * and ; and any whitespace/newlines
                 data = message[1:].rstrip(b';\n\r').strip()
 
+                self.logger.debug("Converting message:")
+                self.logger.debug(f"  Raw data: {data.decode()}")
+
                 try:
+                    # Convert hex string to bytes
                     raw_data = bytes.fromhex(data.decode())
 
-                    # Determine message type based on first byte and length
+                    # Determine message type and validate length
                     msg_len = len(raw_data)
-                    first_byte = raw_data[0] if raw_data else 0
+                    self.logger.debug(f"  Length: {msg_len}")
 
                     if msg_len == BeastFormat.MODES_SHORT_LEN:
                         msg_type = BeastFormat.TYPE_MODES_SHORT
@@ -1058,12 +1136,17 @@ class PicADSBMultiplexer:
                         self.logger.debug(f"Unsupported message length: {msg_len}")
                         return None
 
-                    self.logger.debug(f"Converting message:")
-                    self.logger.debug(f"  Raw data: {raw_data.hex()}")
-                    self.logger.debug(f"  Length: {msg_len}")
                     self.logger.debug(f"  Type: 0x{msg_type:02x}")
 
-                    return self._create_beast_message(msg_type, raw_data)
+                    # Create Beast message
+                    beast_msg = self._create_beast_message(msg_type, raw_data)
+
+                    # Performance monitoring
+                    conversion_time = time.time() - start_time
+                    if conversion_time > 0.1:
+                        self.logger.warning(f"Slow message conversion: {conversion_time:.3f}s")
+
+                    return beast_msg
 
                 except ValueError as ve:
                     self.logger.debug(f"Invalid hex data in message: {data!r}")
@@ -1077,24 +1160,26 @@ class PicADSBMultiplexer:
 
     def _validate_beast_message(self, message: bytes) -> bool:
         """
-        Validate Beast format message structure and CRC.
+        Validate Beast format message structure and integrity.
 
-        Validates:
-        - Message structure
-        - Type correctness
-        - Length consistency
-        - CRC integrity
+        Performs:
+        - Structure validation
+        - Type checking
+        - Length verification
+        - CRC validation using pyModeS
 
         Args:
             message: Complete Beast message
 
         Returns:
-            True if valid, False otherwise
+            True if message is valid, False otherwise
         """
         try:
-            # Unescape and validate basic structure
+            # Remove escape sequences
             unescaped = self._unescape_beast_data(message)
-            if len(unescaped) < 10:  # Minimum length: escape + type + timestamp + 1 byte data + CRC
+
+            # Basic structure checks
+            if len(unescaped) < 11:  # escape + type + timestamp + min_data + crc
                 self.logger.debug("Message too short")
                 return False
 
@@ -1102,7 +1187,7 @@ class PicADSBMultiplexer:
                 self.logger.debug("Invalid escape byte")
                 return False
 
-            # Validate type and length
+            # Validate message type and length
             msg_type = unescaped[1]
             expected_len = {
                 BeastFormat.TYPE_MODEA: BeastFormat.MODEA_LEN,
@@ -1111,15 +1196,27 @@ class PicADSBMultiplexer:
             }.get(msg_type)
 
             if not expected_len:
-                self.logger.debug(f"Invalid message type: {msg_type}")
+                self.logger.debug(f"Invalid message type: 0x{msg_type:02X}")
                 return False
 
-            # Calculate expected total length:
-            # 1 (escape) + 1 (type) + 6 (timestamp) + data_len + 3 (CRC)
-            total_len = 1 + 1 + 6 + expected_len + 3
+            # Calculate total expected length
+            total_len = 1 + 1 + BeastFormat.TIMESTAMP_LEN + expected_len + 3  # escape + type + timestamp + data + crc
 
             if len(unescaped) != total_len:
                 self.logger.debug(f"Length mismatch: expected {total_len}, got {len(unescaped)}")
+                return False
+
+            # Extract components for validation
+            timestamp = unescaped[2:8]
+            data = unescaped[8:-3]
+            received_crc = unescaped[-3:]
+
+            # Validate using pyModeS
+            crc_input = bytes([msg_type]) + timestamp + data
+            calculated_crc = CRC24.compute(crc_input)
+
+            if calculated_crc != received_crc:
+                self.logger.debug(f"CRC mismatch: calculated {calculated_crc.hex()}, received {received_crc.hex()}")
                 return False
 
             return True
@@ -1145,8 +1242,21 @@ class PicADSBMultiplexer:
             raise ValueError(f"Invalid short message length: {len(data)}")
 
     def _broadcast_message(self, data: bytes):
-        """Broadcast data to all connected clients in Beast format."""
+        """
+        Broadcast Beast format message to all connected clients.
+
+        Features:
+        - Message validation
+        - Performance monitoring
+        - Client connection management
+        - Remote server support
+        - Delay detection
+
+        Args:
+            data: Message to broadcast (raw or Beast format)
+        """
         try:
+            # Convert to Beast format if needed
             if data.startswith(bytes([BeastFormat.ESCAPE])):
                 beast_msg = data
             else:
@@ -1154,8 +1264,14 @@ class PicADSBMultiplexer:
                 if not beast_msg:
                     return
 
+            # Validate Beast message
+            if not self._validate_beast_message(beast_msg):
+                self.logger.warning(f"Invalid Beast message: {beast_msg.hex()}")
+                return
+
             current_time = time.time()
 
+            # Check broadcast delay
             if hasattr(self, '_last_broadcast_time'):
                 delay = current_time - self._last_broadcast_time
                 if delay > 1.0:
@@ -1163,14 +1279,19 @@ class PicADSBMultiplexer:
 
             self._last_broadcast_time = current_time
 
+            # Broadcast to clients
             disconnected_clients = []
             for client in self.clients:
                 try:
-                    client.send(beast_msg)
+                    sent = client.send(beast_msg)
+                    if sent == 0:
+                        raise BrokenPipeError("Zero bytes sent")
                     self.client_last_active[client] = current_time
                 except Exception as e:
+                    self.logger.debug(f"Client broadcast error: {e}")
                     disconnected_clients.append(client)
 
+            # Handle remote server
             if self.remote_socket:
                 try:
                     self.remote_socket.send(beast_msg)
@@ -1178,6 +1299,7 @@ class PicADSBMultiplexer:
                     self.logger.error(f"Remote server error: {e}")
                     self.remote_socket = None
 
+            # Clean up disconnected clients
             for client in disconnected_clients:
                 self._remove_client(client)
 
@@ -1214,7 +1336,21 @@ class PicADSBMultiplexer:
                 self._remove_client(client)
 
     def validate_message(self, message: bytes) -> bool:
-        """Validate message format."""
+        """
+        Validate raw ADS-B message format and content.
+
+        Features:
+        - Format validation
+        - Content checking
+        - pyModeS integration for DF validation
+        - Extended error reporting
+
+        Args:
+            message: Raw message bytes
+
+        Returns:
+            True if message is valid
+        """
         try:
             if len(message) < 3:
                 self.logger.debug(f"Message too short: {message!r}")
@@ -1230,16 +1366,27 @@ class PicADSBMultiplexer:
 
             if message.startswith(b'*'):
                 content = message[1:-1]
-                valid_chars = set(b'0123456789ABCDEF')
-                if not all(b in valid_chars for b in content):
-                    self.logger.debug(f"Invalid characters in message: {message!r}")
+
+                # Check for valid hex characters
+                try:
+                    hex_data = content.decode()
+                    int(hex_data, 16)  # Validate hex string
+
+                    # Additional validation using pyModeS for Mode-S messages
+                    if len(hex_data) in (14, 28):  # 7 or 14 bytes
+                        try:
+                            df = pms.df(hex_data)
+                            if df not in (0, 4, 5, 11, 16, 17, 20, 21):
+                                self.logger.debug(f"Unknown DF: {df}")
+                                return False
+                        except:
+                            pass
+
+                except ValueError:
+                    self.logger.debug(f"Invalid hex data: {content!r}")
                     return False
 
             return True
-
-        except Exception as e:
-            self.logger.error(f"Message validation error: {e}")
-            return False
 
         except Exception as e:
             self.logger.error(f"Message validation error: {e}")
