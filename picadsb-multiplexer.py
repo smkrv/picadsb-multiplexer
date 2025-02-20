@@ -1002,10 +1002,6 @@ class PicADSBMultiplexer:
         """
         Convert raw ADS-B message to Beast format.
 
-        Message types supported:
-        - Mode-S short (7 bytes) - DF11, DF17 short
-        - Mode-S long (14 bytes) - DF17, DF18 extended squitter
-
         Args:
             message: Raw message starting with '*' and ending with ';'
 
@@ -1014,7 +1010,7 @@ class PicADSBMultiplexer:
         """
         try:
             # Remove markers and convert to bytes
-            raw_data = message[1:-1].decode().strip()
+            raw_data = message[1:-1].decode().strip(';')  # Remove ; before conversion
 
             # Check for valid hex characters
             if not all(c in '0123456789ABCDEFabcdef' for c in raw_data):
@@ -1028,47 +1024,38 @@ class PicADSBMultiplexer:
                 self.logger.debug(f"Hex conversion error: {e}")
                 return None
 
-            # Determine message type and format based on length
-            msg_type = None
-            if len(data) == BeastFormat.MODES_SHORT_LEN:  # 7 bytes
-                msg_type = BeastFormat.TYPE_MODES_SHORT
-            elif len(data) == BeastFormat.MODES_LONG_LEN:  # 14 bytes
-                msg_type = BeastFormat.TYPE_MODES_LONG
-            elif len(data) == BeastFormat.MODEA_LEN:  # 2 bytes
-                msg_type = BeastFormat.TYPE_MODEA
-            else:
-                self.logger.debug(f"Unsupported message length: {len(data)} bytes")
-                return None
-
             # Get timestamp and signal level
             timestamp = self.timestamp_gen.get_timestamp()
-            signal_level = bytes([0xFF])  # Default signal level
+            signal_level = bytes([0xFF])
 
-            # Construct message for CRC
+            # Determine message type based on length
+            if len(data) == BeastFormat.MODES_SHORT_LEN:
+                msg_type = BeastFormat.TYPE_MODES_SHORT
+            elif len(data) == BeastFormat.MODES_LONG_LEN:
+                msg_type = BeastFormat.TYPE_MODES_LONG
+            else:
+                self.logger.debug(f"Unsupported message length: {len(data)}")
+                return None
+
+            # Construct complete message for CRC
             msg_for_crc = bytes([msg_type]) + timestamp + signal_level + data
 
-            # Compute CRC
+            # Calculate CRC using pyModeS
             crc = CRC24.compute(msg_for_crc)
             if not crc:
                 return None
 
-            # Build complete message
-            message = bytearray()
-            message.append(BeastFormat.ESCAPE)
-            message.extend(msg_for_crc)
-            message.extend(crc)
+            # Build final message with escape sequences
+            message = bytearray([BeastFormat.ESCAPE])  # Start marker
+            message.extend(msg_for_crc)  # Type + timestamp + signal + data
+            message.extend(crc)  # Add CRC
 
             # Apply escape sequences
             final_msg = self._escape_beast_data(bytes(message))
 
-            if final_msg:
-                self.logger.debug(f"Converted to Beast: {final_msg.hex().upper()}")
-
+            self.logger.debug(f"Converted to Beast: {final_msg.hex().upper()}")
             return final_msg
 
-        except UnicodeDecodeError as e:
-            self.logger.debug(f"Decode error: {e}")
-            return None
         except Exception as e:
             self.logger.error(f"Beast conversion error: {e}")
             return None
