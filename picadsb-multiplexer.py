@@ -44,6 +44,7 @@ from typing import Optional, Dict, Any, List, Tuple
 class CRC24:
     """
     CRC-24 implementation for Beast format messages.
+    Single byte CRC for Beast protocol.
     """
 
     @staticmethod
@@ -56,7 +57,7 @@ class CRC24:
             debug: Enable debug logging
 
         Returns:
-            Single byte CRC value
+            Single byte CRC value as integer
         """
         try:
             if len(data) < 3:
@@ -71,6 +72,9 @@ class CRC24:
 
             # Take only least significant byte
             crc_byte = full_crc & 0xFF
+
+            if debug:
+                logging.debug(f"Full CRC: {full_crc:06X}, using byte: {crc_byte:02X}")
 
             return crc_byte
 
@@ -309,7 +313,6 @@ class PicADSBMultiplexer:
         if not self.self_test():
             raise RuntimeError("Self-test failed, aborting startup")
 
-
     def _send_heartbeat(self):
         """
         Send Beast format heartbeat message (Mode-A null message).
@@ -320,28 +323,32 @@ class PicADSBMultiplexer:
         - 6 bytes timestamp
         - 1 byte signal level (0xFF)
         - 2 bytes Mode-A data (0x00, 0x00)
-        - 3 bytes CRC
+        - 1 byte CRC
         """
         try:
             # Get current timestamp
             timestamp = self.timestamp_gen.get_timestamp()
 
-            # Create Mode-A message components
-            msg_type = bytes([BeastFormat.TYPE_MODEA])
-            signal_level = bytes([0xFF])  # No signal level for heartbeat
+            # Create message components
+            msg_type = BeastFormat.TYPE_MODEA
+            signal_level = 0xFF
             data = bytes([0x00, 0x00])  # Null Mode-A data
 
             # Construct message for CRC computation
-            msg_for_crc = msg_type + timestamp + signal_level + data
+            msg_for_crc = bytearray()
+            msg_for_crc.append(msg_type)
+            msg_for_crc.extend(timestamp)
+            msg_for_crc.append(signal_level)
+            msg_for_crc.extend(data)
 
             # Compute CRC
-            crc = CRC24.compute(msg_for_crc)
+            crc = CRC24.compute(bytes(msg_for_crc))
 
             # Construct complete message
             message = bytearray()
             message.append(BeastFormat.ESCAPE)
             message.extend(msg_for_crc)
-            message.extend(crc)
+            message.append(crc)  # Add single CRC byte
 
             # Apply escape sequences
             final_msg = self._escape_beast_data(bytes(message))
