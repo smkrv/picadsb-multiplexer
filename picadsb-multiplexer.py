@@ -43,24 +43,20 @@ from typing import Optional, Dict, Any, List, Tuple
 
 class CRC24:
     """
-    CRC-24 implementation using pyModeS for ADS-B/Mode-S messages.
-    Implements polynomial: x^24 + x^23 + x^22 + x^21 + x^20 + x^19 + x^18 + x^17 + x^16 + x^15 + x^14 + x^13 + x^12 + x^10 + x^3 + 1
+    CRC-24 implementation for Beast format messages.
     """
 
     @staticmethod
-    def compute(data: bytes, debug: bool = False) -> bytes:
+    def compute(data: bytes, debug: bool = False) -> int:
         """
-        Compute CRC-24 using pyModeS implementation.
+        Compute single-byte CRC for Beast format.
 
         Args:
             data: Raw message bytes including type and timestamp
             debug: Enable debug logging
 
         Returns:
-            3-byte CRC value
-
-        Raises:
-            ValueError: If input data is too short
+            Single byte CRC value
         """
         try:
             if len(data) < 3:
@@ -70,17 +66,22 @@ class CRC24:
             if debug:
                 logging.debug(f"Computing CRC for hex data: {hex_data}")
 
-            remainder = pms.common.crc(hex_data)
-            return remainder.to_bytes(3, 'big')
+            # Get full CRC-24 value
+            full_crc = pms.common.crc(hex_data)
+
+            # Take only least significant byte
+            crc_byte = full_crc & 0xFF
+
+            return crc_byte
 
         except Exception as e:
             logging.error(f"CRC computation error: {e}")
-            return b"\x00\x00\x00"
+            return 0
 
     @staticmethod
     def verify(message: bytes, debug: bool = False) -> bool:
         """
-        Verify CRC of complete Mode-S message using pyModeS.
+        Verify single-byte CRC of Beast message.
 
         Args:
             message: Complete message including type, timestamp and CRC
@@ -90,14 +91,20 @@ class CRC24:
             True if CRC is valid
         """
         try:
-            if len(message) < 11:  # Minimum length for any Beast message
+            if len(message) < 11:  # Minimum length for Beast message
                 return False
 
-            hex_msg = message.hex().upper()
-            if debug:
-                logging.debug(f"Verifying CRC for message: {hex_msg}")
+            # Split message into data and CRC
+            data = message[:-1]
+            received_crc = message[-1]
 
-            return pms.common.crc(hex_msg) == 0
+            # Calculate CRC
+            calculated_crc = CRC24.compute(data)
+
+            if debug:
+                logging.debug(f"CRC verification: calculated={calculated_crc:02X}, received={received_crc:02X}")
+
+            return calculated_crc == received_crc
 
         except Exception as e:
             logging.error(f"CRC verification error: {e}")
@@ -999,6 +1006,9 @@ class PicADSBMultiplexer:
             return None
 
     def _convert_to_beast(self, message: bytes) -> Optional[bytes]:
+        """
+        Convert raw ADS-B message to Beast format with single-byte CRC.
+        """
         try:
             # Remove markers and convert to bytes
             raw_data = message[1:-1].decode().strip(';')
@@ -1014,7 +1024,7 @@ class PicADSBMultiplexer:
             timestamp = self.timestamp_gen.get_timestamp()
             signal_level = bytes([0xFF])
 
-            # Determine message type and validate length
+            # Determine message type
             if len(data) == 7:  # Mode-S short
                 msg_type = BeastFormat.TYPE_MODES_SHORT
             elif len(data) == 14:  # Mode-S long
@@ -1031,9 +1041,9 @@ class PicADSBMultiplexer:
             message.append(0xFF)  # Signal level
             message.extend(data)  # ADS-B data
 
-            # Calculate CRC
+            # Calculate single-byte CRC
             crc = CRC24.compute(bytes(message[1:]))  # CRC of everything after escape
-            message.append(crc[0])  # Add single CRC byte
+            message.append(crc)  # Add CRC byte
 
             # Apply escape sequences
             final_msg = self._escape_beast_data(bytes(message))
