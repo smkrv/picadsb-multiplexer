@@ -1002,35 +1002,75 @@ class PicADSBMultiplexer:
         """
         Convert raw ADS-B message to Beast format.
 
+        Message types supported:
+        - Mode-S short (7 bytes) - DF11, DF17 short
+        - Mode-S long (14 bytes) - DF17, DF18 extended squitter
+
         Args:
             message: Raw message starting with '*' and ending with ';'
 
         Returns:
-            Complete Beast message with escape sequences
+            Complete Beast message with escape sequences or None if invalid
         """
         try:
+            # Remove markers and convert to bytes
             raw_data = message[1:-1].decode().strip()
 
-            if len(raw_data) % 2 != 0:
-                self.logger.error(f"Invalid hex length: {len(raw_data)}")
-                return None
-
-            # Check if the raw data contains only hexadecimal characters
+            # Check for valid hex characters
             if not all(c in '0123456789ABCDEFabcdef' for c in raw_data):
-                self.logger.error(f"Invalid hex data: {raw_data}")
+                self.logger.debug(f"Invalid hex characters in: {raw_data}")
                 return None
 
-            data = bytes.fromhex(raw_data)
-
-            if len(data) not in (BeastFormat.MODES_SHORT_LEN, BeastFormat.MODES_LONG_LEN):
-                self.logger.error(f"Invalid data length: {len(data)}")
+            # Convert to bytes
+            try:
+                data = bytes.fromhex(raw_data)
+            except ValueError as e:
+                self.logger.debug(f"Hex conversion error: {e}")
                 return None
 
-            msg_type = BeastFormat.TYPE_MODES_SHORT if len(data) == BeastFormat.MODES_SHORT_LEN else BeastFormat.TYPE_MODES_LONG
-            return self._create_beast_message(msg_type, data)
+            # Determine message type and format based on length
+            msg_type = None
+            if len(data) == BeastFormat.MODES_SHORT_LEN:  # 7 bytes
+                msg_type = BeastFormat.TYPE_MODES_SHORT
+            elif len(data) == BeastFormat.MODES_LONG_LEN:  # 14 bytes
+                msg_type = BeastFormat.TYPE_MODES_LONG
+            elif len(data) == BeastFormat.MODEA_LEN:  # 2 bytes
+                msg_type = BeastFormat.TYPE_MODEA
+            else:
+                self.logger.debug(f"Unsupported message length: {len(data)} bytes")
+                return None
 
-        except (ValueError, UnicodeDecodeError) as e:
-            self.logger.error(f"Conversion error: {e}")
+            # Get timestamp and signal level
+            timestamp = self.timestamp_gen.get_timestamp()
+            signal_level = bytes([0xFF])  # Default signal level
+
+            # Construct message for CRC
+            msg_for_crc = bytes([msg_type]) + timestamp + signal_level + data
+
+            # Compute CRC
+            crc = CRC24.compute(msg_for_crc)
+            if not crc:
+                return None
+
+            # Build complete message
+            message = bytearray()
+            message.append(BeastFormat.ESCAPE)
+            message.extend(msg_for_crc)
+            message.extend(crc)
+
+            # Apply escape sequences
+            final_msg = self._escape_beast_data(bytes(message))
+
+            if final_msg:
+                self.logger.debug(f"Converted to Beast: {final_msg.hex().upper()}")
+
+            return final_msg
+
+        except UnicodeDecodeError as e:
+            self.logger.debug(f"Decode error: {e}")
+            return None
+        except Exception as e:
+            self.logger.error(f"Beast conversion error: {e}")
             return None
 
     def _validate_beast_message(self, message: bytes) -> bool:
@@ -1213,52 +1253,34 @@ class PicADSBMultiplexer:
     def validate_message(self, message: bytes) -> bool:
         """
         Validate raw ADS-B message format and content.
-
-        Features:
-        - Format validation
-        - Content checking
-        - pyModeS integration for DF validation
-        - Extended error reporting
-
-        Args:
-            message: Raw message bytes
-
-        Returns:
-            True if message is valid
         """
         try:
             if len(message) < 3:
-                self.logger.debug(f"Message too short: {message!r}")
                 return False
 
             if not message.startswith((b'*', b'#', b'@')):
-                self.logger.debug(f"Invalid start marker: {message!r}")
                 return False
 
             if not message.endswith(b';'):
-                self.logger.debug(f"Missing terminator: {message!r}")
                 return False
 
             if message.startswith(b'*'):
                 content = message[1:-1]
-
-                # Check for valid hex characters
                 try:
                     hex_data = content.decode()
-                    int(hex_data, 16)  # Validate hex string
+                    # Convert to check validity
+                    data = bytes.fromhex(hex_data)
 
-                    # Additional validation using pyModeS for Mode-S messages
-                    if len(hex_data) in (14, 28):  # 7 or 14 bytes
-                        try:
-                            df = pms.df(hex_data)
-                            if df not in (0, 4, 5, 11, 16, 17, 20, 21):
-                                self.logger.debug(f"Unknown DF: {df}")
-                                return False
-                        except:
-                            pass
+                    # Check supported lengths
+                    if len(data) in (BeastFormat.MODEA_LEN,
+                                   BeastFormat.MODES_SHORT_LEN,
+                                   BeastFormat.MODES_LONG_LEN):
+                        return True
+
+                    self.logger.debug(f"Unsupported message length: {len(data)} bytes")
+                    return False
 
                 except ValueError:
-                    self.logger.debug(f"Invalid hex data: {content!r}")
                     return False
 
             return True
