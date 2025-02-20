@@ -1064,7 +1064,7 @@ class PicADSBMultiplexer:
 
     def _validate_beast_message(self, message: bytes) -> bool:
         """
-        Validate Beast format message structure and integrity.
+        Validate Beast format message structure and integrity. 
 
         Args:
             message: Complete Beast message with escape sequences
