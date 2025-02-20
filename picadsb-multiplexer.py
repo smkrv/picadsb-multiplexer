@@ -44,6 +44,7 @@ from typing import Optional, Dict, Any, List, Tuple
 class CRC24:
     """
     CRC-24 implementation using pyModeS for ADS-B/Mode-S messages.
+    Implements polynomial: x^24 + x^23 + x^22 + x^21 + x^20 + x^19 + x^18 + x^17 + x^16 + x^15 + x^14 + x^13 + x^12 + x^10 + x^3 + 1
     """
 
     @staticmethod
@@ -52,16 +53,26 @@ class CRC24:
         Compute CRC-24 using pyModeS implementation.
 
         Args:
-            data: Raw message bytes (without CRC)
+            data: Raw message bytes including type and timestamp
             debug: Enable debug logging
 
         Returns:
             3-byte CRC value
+
+        Raises:
+            ValueError: If input data is too short
         """
         try:
+            if len(data) < 3:
+                raise ValueError("Data too short for CRC computation")
+
             hex_data = data.hex().upper()
+            if debug:
+                logging.debug(f"Computing CRC for hex data: {hex_data}")
+
             remainder = pms.common.crc(hex_data)
             return remainder.to_bytes(3, 'big')
+
         except Exception as e:
             logging.error(f"CRC computation error: {e}")
             return b"\x00\x00\x00"
@@ -72,17 +83,22 @@ class CRC24:
         Verify CRC of complete Mode-S message using pyModeS.
 
         Args:
-            message: Complete message including CRC
+            message: Complete message including type, timestamp and CRC
             debug: Enable debug logging
 
         Returns:
             True if CRC is valid
         """
         try:
-            hex_msg = message.hex().upper()
-            if len(hex_msg) % 2 != 0 or len(hex_msg) < 14:
+            if len(message) < 11:  # Minimum length for any Beast message
                 return False
+
+            hex_msg = message.hex().upper()
+            if debug:
+                logging.debug(f"Verifying CRC for message: {hex_msg}")
+
             return pms.common.crc(hex_msg) == 0
+
         except Exception as e:
             logging.error(f"CRC verification error: {e}")
             return False
@@ -289,27 +305,42 @@ class PicADSBMultiplexer:
 
     def _send_heartbeat(self):
         """
-        Send properly formatted Beast heartbeat message.
+        Send Beast format heartbeat message (Mode-A null message).
 
-        Implements Beast format specification for Mode-A heartbeat messages
-        with proper timestamp and CRC.
+        Message structure:
+        - 0x1A (escape)
+        - 0x31 (Mode-A type)
+        - 6 bytes timestamp
+        - 1 byte signal level (0xFF)
+        - 2 bytes Mode-A data (0x00, 0x00)
+        - 3 bytes CRC
         """
         try:
-            # Create Mode-A message with null data
+            # Get current timestamp
             timestamp = self.timestamp_gen.get_timestamp()
-            data = bytes([0x00, 0x00])  # Mode-A requires 2-byte data
-            crc = CRC24.compute(data)
 
-            # Construct message with proper structure
+            # Create Mode-A message components
+            msg_type = bytes([BeastFormat.TYPE_MODEA])
+            signal_level = bytes([0xFF])  # No signal level for heartbeat
+            data = bytes([0x00, 0x00])  # Null Mode-A data
+
+            # Construct message for CRC computation
+            msg_for_crc = msg_type + timestamp + signal_level + data
+
+            # Compute CRC
+            crc = CRC24.compute(msg_for_crc)
+
+            # Construct complete message
             message = bytearray()
             message.append(BeastFormat.ESCAPE)
-            message.append(BeastFormat.TYPE_MODEA)
-            message.extend(timestamp)
-            message.extend(data)
+            message.extend(msg_for_crc)
             message.extend(crc)
 
             # Apply escape sequences
             final_msg = self._escape_beast_data(bytes(message))
+
+            # Log the message in debug mode
+            self.logger.debug(f"Heartbeat message: {final_msg.hex().upper()}")
 
             # Send to all clients
             disconnected = []
@@ -318,7 +349,6 @@ class PicADSBMultiplexer:
                     sent = client.send(final_msg)
                     if sent == 0:
                         raise BrokenPipeError("Zero bytes sent")
-                    self.logger.debug(f"Heartbeat sent: {final_msg.hex()}")
                 except Exception as e:
                     self.logger.warning(f"Failed to send heartbeat: {e}")
                     disconnected.append(client)
@@ -334,6 +364,8 @@ class PicADSBMultiplexer:
                 except Exception as e:
                     self.logger.error(f"Remote heartbeat failed: {e}")
                     self.remote_socket = None
+
+            self.last_heartbeat = time.time()
 
         except Exception as e:
             self.logger.error(f"Heartbeat generation failed: {e}")
@@ -892,20 +924,27 @@ class PicADSBMultiplexer:
         """
         Apply Beast format escape sequences.
 
+        Escapes 0x1A bytes by doubling them according to Beast protocol specification.
+
         Args:
             data: Raw message bytes
 
         Returns:
             Escaped message bytes
         """
-        escaped = bytearray()
-        for byte in data:
-            if byte == BeastFormat.ESCAPE:
-                escaped.append(BeastFormat.ESCAPE)
-                escaped.append(BeastFormat.ESCAPE)
-            else:
-                escaped.append(byte)
-        return bytes(escaped)
+        try:
+            escaped = bytearray()
+            for byte in data:
+                if byte == BeastFormat.ESCAPE:
+                    escaped.extend([BeastFormat.ESCAPE, BeastFormat.ESCAPE])
+                else:
+                    escaped.append(byte)
+
+            return bytes(escaped)
+
+        except Exception as e:
+            self.logger.error(f"Beast data escape error: {e}")
+            return data  # Return original data on error
 
     def _unescape_beast_data(self, data: bytes) -> bytes:
         """
@@ -998,18 +1037,25 @@ class PicADSBMultiplexer:
         """
         Validate Beast format message structure and integrity.
 
+        Checks:
+        - Message length
+        - Start marker
+        - Message type
+        - Data length per type
+        - CRC validity
+
         Args:
             message: Complete Beast message
 
         Returns:
-            True if message is valid, False otherwise
+            True if message is valid
         """
         try:
             # Remove escape sequences
             unescaped = self._unescape_beast_data(message)
 
             # Basic structure checks
-            if len(unescaped) < 11:  # escape + type + timestamp + min_data + crc
+            if len(unescaped) < 11:
                 self.logger.debug("Message too short")
                 return False
 
@@ -1017,17 +1063,31 @@ class PicADSBMultiplexer:
                 self.logger.debug("Invalid escape byte")
                 return False
 
+            # Validate message type and length
             msg_type = unescaped[1]
-            if msg_type not in (BeastFormat.TYPE_MODEA, BeastFormat.TYPE_MODES_SHORT, BeastFormat.TYPE_MODES_LONG):
+            if msg_type == BeastFormat.TYPE_MODEA:
+                required_len = 12  # 1 + 1 + 6 + 1 + 2 + 3
+            elif msg_type == BeastFormat.TYPE_MODES_SHORT:
+                required_len = 17  # 1 + 1 + 6 + 1 + 7 + 3
+            elif msg_type == BeastFormat.TYPE_MODES_LONG:
+                required_len = 24  # 1 + 1 + 6 + 1 + 14 + 3
+            else:
                 self.logger.debug(f"Invalid message type: 0x{msg_type:02X}")
                 return False
 
-            timestamp = unescaped[2:8]
-            data = unescaped[8:-3]
-            received_crc = unescaped[-3:]
+            if len(unescaped) != required_len:
+                self.logger.debug(f"Invalid message length for type 0x{msg_type:02X}: {len(unescaped)}")
+                return False
 
-            # Validate using pyModeS
-            crc_input = bytes([msg_type]) + timestamp + data
+            # Extract components
+            timestamp = unescaped[2:8]
+            signal_level = unescaped[8]
+            data_end = -3  # Last 3 bytes are CRC
+            data = unescaped[9:data_end]
+            received_crc = unescaped[data_end:]
+
+            # Validate CRC
+            crc_input = bytes([msg_type]) + timestamp + bytes([signal_level]) + data
             calculated_crc = CRC24.compute(crc_input)
 
             if calculated_crc != received_crc:
