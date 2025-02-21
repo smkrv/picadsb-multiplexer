@@ -635,11 +635,9 @@ class PicADSBMultiplexer:
 
             if self.ser.in_waiting:
                 self._last_data_time = time.time()
-                # Читаем больший буфер за раз
                 data = self.ser.read(min(self.ser.in_waiting, 8192))
                 self.stats['bytes_received'] += len(data)
 
-                # Используем bytearray для более эффективной конкатенации
                 message = bytearray()
 
                 for byte in data:
@@ -1008,55 +1006,41 @@ class PicADSBMultiplexer:
             return None
 
     def _convert_to_beast(self, message: bytes) -> Optional[bytes]:
-        """
-        Convert raw ADS-B message to Beast format.
-
-        Args:
-            message: Raw message starting with '*' and ending with ';'
-
-        Returns:
-            Complete Beast format message with escape sequences
-        """
+        """Convert raw ADS-B message to Beast format with optimized processing."""
         try:
-            # Remove markers and convert to bytes
-            raw_data = message[1:-1].decode().strip(';')
+            result = bytearray(32)
+            pos = 0
 
+            result[pos] = BeastFormat.ESCAPE
+            pos += 1
+
+            raw_data = message[1:-1]
             try:
-                data = bytes.fromhex(raw_data)
+                data = bytes.fromhex(raw_data.decode())
             except ValueError as e:
                 self.logger.debug(f"Hex conversion error: {e}")
                 return None
 
-            # Get timestamp and signal level
+            msg_type = BeastFormat.TYPE_MODES_SHORT if len(data) == 7 else BeastFormat.TYPE_MODES_LONG
+
+            result[pos] = msg_type
+            pos += 1
+
             timestamp = self.timestamp_gen.get_timestamp()
-            signal_level = 0xFF
+            result[pos:pos+6] = timestamp
+            pos += 6
 
-            # Determine message type
-            if len(data) == 7:
-                msg_type = BeastFormat.TYPE_MODES_SHORT
-            elif len(data) == 14:
-                msg_type = BeastFormat.TYPE_MODES_LONG
-            else:
-                self.logger.debug(f"Unsupported data length: {len(data)}")
-                return None
+            result[pos] = 0xFF
+            pos += 1
 
-            # Build complete message
-            message = bytearray([BeastFormat.ESCAPE])  # Start with escape byte
-            message.append(msg_type)  # Message type
-            message.extend(timestamp)  # 6 bytes timestamp
-            message.append(signal_level)  # Signal level
-            message.extend(data)  # ADS-B data
+            result[pos:pos+len(data)] = data
+            pos += len(data)
 
-            # Calculate CRC on message without initial escape
-            crc = CRC24.compute(message[1:])
-            message.append(crc)
+            crc = CRC24.compute(result[1:pos])
+            result[pos] = crc
+            pos += 1
 
-            # Apply escape sequences to everything after initial escape
-            final_msg = bytearray([BeastFormat.ESCAPE])  # Keep initial escape
-            final_msg.extend(self._escape_beast_data(message[1:]))  # Escape rest of message
-
-            self.logger.debug(f"Converted to Beast: {final_msg.hex().upper()}")
-            return bytes(final_msg)
+            return bytes(result[:pos])
 
         except Exception as e:
             self.logger.error(f"Beast conversion error: {e}")
