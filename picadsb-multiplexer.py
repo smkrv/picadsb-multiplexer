@@ -910,77 +910,108 @@ class PicADSBMultiplexer:
         microseconds = int(elapsed * 1e6) % BeastFormat.MAX_TIMESTAMP
         return microseconds.to_bytes(6, 'big')
 
-    def _escape_beast_data(self, data: bytes) -> bytes:
-        """
-        Apply Beast format escape sequences.
-        Adds initial escape byte and escapes 0x1A in data.
-        """
-        try:
-            escaped = bytearray([BeastFormat.ESCAPE])  # Start with escape byte
+  def _escape_beast_data(self, data: bytes) -> bytes:
+      """
+      Apply Beast format escape sequences.
+      Escapes 0x1A bytes in data.
 
-            for byte in data:
-                if byte == BeastFormat.ESCAPE:
-                    escaped.extend([BeastFormat.ESCAPE, BeastFormat.ESCAPE])
-                else:
-                    escaped.append(byte)
+      Args:
+          data: Raw message bytes
 
-            return bytes(escaped)
+      Returns:
+          Escaped message bytes
+      """
+      try:
+          escaped = bytearray()
 
-        except Exception as e:
-            self.logger.error(f"Beast data escape error: {e}")
-            return data
+          for byte in data:
+              if byte == BeastFormat.ESCAPE:
+                  escaped.extend([BeastFormat.ESCAPE, BeastFormat.ESCAPE])
+              else:
+                  escaped.append(byte)
+
+          return bytes(escaped)
+
+      except Exception as e:
+          self.logger.error(f"Beast data escape error: {e}")
+          return data
 
     def _unescape_beast_data(self, data: bytes) -> bytes:
-        """
-        Remove Beast format escape sequences.
+      """
+      Remove Beast format escape sequences.
 
-        Args:
-            data: Raw Beast message bytes
+      Args:
+          data: Raw Beast message bytes
 
-        Returns:
-            Unescaped message bytes
-        """
-        unescaped_data = bytearray()
-        i = 0
-        while i < len(data):
-            if data[i] == BeastFormat.ESCAPE:
-                if i + 1 < len(data) and data[i + 1] == BeastFormat.ESCAPE:
-                    unescaped_data.append(BeastFormat.ESCAPE)
-                    i += 2
-                else:
-                    self.logger.debug("Invalid escape sequence")
-                    return b''
-            else:
-                unescaped_data.append(data[i])
-                i += 1
+      Returns:
+          Unescaped message bytes
+      """
+      try:
+          if not data:
+              return b''
 
-        return bytes(unescaped_data)
+          result = bytearray()
+          i = 0
+
+          while i < len(data):
+              if data[i] == BeastFormat.ESCAPE:
+                  if i + 1 >= len(data):
+                      self.logger.debug("Incomplete escape sequence at end")
+                      break
+
+                  if data[i + 1] == BeastFormat.ESCAPE:
+                      result.append(BeastFormat.ESCAPE)
+                      i += 2
+                  else:
+                      # Single escape is part of framing
+                      result.append(data[i])
+                      i += 1
+              else:
+                  result.append(data[i])
+                  i += 1
+
+          return bytes(result)
+
+      except Exception as e:
+          self.logger.error(f"Beast data unescape error: {e}")
+          return b''
 
     def _create_beast_message(self, msg_type: int, data: bytes, timestamp: bytes = None) -> bytes:
-        try:
-            timestamp = self.timestamp_gen.get_timestamp() if timestamp is None else timestamp
+      """
+      Create Beast format message with proper framing and escaping.
 
-            crc_input = bytes([msg_type]) + timestamp + data
-            crc = CRC24.compute(crc_input)
+      Args:
+          msg_type: Message type (0x31-0x33)
+          data: Raw message data
+          timestamp: Optional 6-byte timestamp
 
-            message = bytearray()
-            message.append(BeastFormat.ESCAPE)
-            message.append(msg_type)
-            message.extend(timestamp)
-            message.extend(data)
-            message.extend(crc)
+      Returns:
+          Complete Beast message
+      """
+      try:
+          if timestamp is None:
+              timestamp = self.timestamp_gen.get_timestamp()
 
-            # Apply escape sequences
-            escaped_message = self._escape_beast_data(bytes(message))
+          # Create raw message first
+          message = bytearray([BeastFormat.ESCAPE, msg_type])  # Start marker and type
+          message.extend(timestamp)  # 6 byte timestamp
+          message.append(0xFF)  # Signal level
+          message.extend(data)  # ADS-B data
 
-            # Log the final message
-            self.logger.debug(f"Final Beast message: {escaped_message.hex().upper()}")
+          # Calculate CRC on unescaped data
+          crc = CRC24.compute(message[1:])  # Skip initial escape
+          message.append(crc)
 
-            return escaped_message
+          # Now escape the data portion
+          final_msg = message[:1]  # Keep initial escape
+          final_msg.extend(self._escape_beast_data(message[1:]))
 
-        except Exception as e:
-            self.logger.error(f"Beast creation error: {e}")
-            return None
+          self.logger.debug(f"Created Beast message: {final_msg.hex().upper()}")
+          return bytes(final_msg)
+
+      except Exception as e:
+          self.logger.error(f"Beast message creation error: {e}")
+          return None
 
     def _convert_to_beast(self, message: bytes) -> Optional[bytes]:
         """
@@ -1041,38 +1072,40 @@ class PicADSBMultiplexer:
             True if message is valid
         """
         try:
-            # Remove escape sequences
-            unescaped = self._unescape_beast_data(message)
-
-            # Basic structure checks
-            if len(unescaped) < 11:  # Minimum length for any Beast message
-                self.logger.debug(f"Message too short after unescaping: {len(unescaped)}")
+            if not message or len(message) < 11:
+                self.logger.debug(f"Message too short: {len(message) if message else 0}")
                 return False
 
-            if unescaped[0] != BeastFormat.ESCAPE:
-                self.logger.debug("Invalid start byte")
+            if message[0] != BeastFormat.ESCAPE:
+                self.logger.debug("Missing start escape")
                 return False
 
             # Get message type
-            msg_type = unescaped[1]
-
-            # Calculate expected length after unescaping
-            if msg_type == BeastFormat.TYPE_MODEA:
-                expected_len = 12  # 1(ESC) + 1(type) + 6(timestamp) + 1(signal) + 2(data) + 1(crc)
-            elif msg_type == BeastFormat.TYPE_MODES_SHORT:
-                expected_len = 17  # 1(ESC) + 1(type) + 6(timestamp) + 1(signal) + 7(data) + 1(crc)
-            elif msg_type == BeastFormat.TYPE_MODES_LONG:
-                expected_len = 24  # 1(ESC) + 1(type) + 6(timestamp) + 1(signal) + 14(data) + 1(crc)
-            else:
+            msg_type = message[1]
+            if msg_type not in (BeastFormat.TYPE_MODEA,
+                              BeastFormat.TYPE_MODES_SHORT,
+                              BeastFormat.TYPE_MODES_LONG):
                 self.logger.debug(f"Invalid message type: 0x{msg_type:02X}")
                 return False
 
-            if len(unescaped) != expected_len:
-                self.logger.debug(f"Invalid unescaped length for type 0x{msg_type:02X}: {len(unescaped)}, expected {expected_len}")
+            # Unescape and validate
+            data = self._unescape_beast_data(message)
+            if not data:
+                return False
+
+            # Verify length after unescaping
+            expected_len = {
+                BeastFormat.TYPE_MODEA: 12,
+                BeastFormat.TYPE_MODES_SHORT: 17,
+                BeastFormat.TYPE_MODES_LONG: 24
+            }.get(msg_type)
+
+            if len(data) != expected_len:
+                self.logger.debug(f"Invalid length after unescape: got {len(data)}, expected {expected_len}")
                 return False
 
             # Verify CRC
-            return CRC24.verify(unescaped[1:], debug=True)  # Skip escape byte for CRC verification
+            return CRC24.verify(data[1:], debug=True)
 
         except Exception as e:
             self.logger.error(f"Beast message validation error: {e}")
