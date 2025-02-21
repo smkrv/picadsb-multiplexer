@@ -910,7 +910,7 @@ class PicADSBMultiplexer:
         microseconds = int(elapsed * 1e6) % BeastFormat.MAX_TIMESTAMP
         return microseconds.to_bytes(6, 'big')
 
-  def _escape_beast_data(self, data: bytes) -> bytes:
+    def _escape_beast_data(self, data: bytes) -> bytes:
       """
       Apply Beast format escape sequences.
       Escapes 0x1A bytes in data.
