@@ -1500,22 +1500,59 @@ class PicADSBMultiplexer:
 if __name__ == '__main__':
     import argparse
 
-    parser = argparse.ArgumentParser(description='PicADSB Multiplexer')
-    parser.add_argument('--port', type=int, default=30002,
-                      help='TCP port (default: 30002)')
-    parser.add_argument('--serial', default='/dev/ttyACM0',
-                      help='Serial port (default: /dev/ttyACM0)')
-    parser.add_argument('--log-level', default='INFO',
-                      choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
-                      help='Log level (default: INFO)')
-    parser.add_argument('--no-init', action='store_true',
-                      help='Skip device initialization')
-    parser.add_argument('--remote-host', type=str, default=None,
-                      help='Remote server host to connect to (optional)')
-    parser.add_argument('--remote-port', type=int, default=None,
-                      help='Remote server port to connect to (optional)')
+    parser = argparse.ArgumentParser(
+        description='PicADSB Multiplexer',
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
+
+    # Required arguments
+    parser.add_argument(
+        '--port',
+        type=int,
+        default=30002,
+        help='Local TCP port to listen on'
+    )
+
+    parser.add_argument(
+        '--serial',
+        default='/dev/ttyACM0',
+        help='Serial port device path'
+    )
+
+    # Optional arguments
+    parser.add_argument(
+        '--log-level',
+        default='INFO',
+        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
+        help='Logging verbosity level'
+    )
+
+    parser.add_argument(
+        '--no-init',
+        action='store_true',
+        help='Skip device initialization sequence'
+    )
+
+    # Remote connection group
+    remote_group = parser.add_argument_group('Remote connection (optional)')
+    remote_group.add_argument(
+        '--remote-host',
+        metavar='HOST',
+        help='Remote server hostname or IP'
+    )
+
+    remote_group.add_argument(
+        '--remote-port',
+        metavar='PORT',
+        type=int,
+        help='Remote server port number'
+    )
 
     args = parser.parse_args()
+
+    # Validate remote connection arguments
+    if bool(args.remote_host) != bool(args.remote_port):
+        parser.error("Both --remote-host and --remote-port must be specified together")
 
     try:
         multiplexer = PicADSBMultiplexer(
