@@ -431,22 +431,46 @@ class PicADSBMultiplexer:
     def _check_remote_connection(self):
         """
         Check remote connection status and attempt to reconnect if needed.
-        This check runs every 60 seconds to ensure stable remote connection.
-        """
-        current_time = time.time()
 
-        if self.remote_host and self.remote_port:
-            if current_time - self.last_remote_check >= 60:
+        Features:
+        - Validates remote connection parameters
+        - Periodic connection check (60s interval)
+        - Automatic reconnection
+        - Connection state logging
+        - Error handling
+
+        Note:
+            Remote connection is optional and skipped if host/port not specified
+        """
+        # Skip if remote connection not configured
+        if not all([self.remote_host, self.remote_port]):
+            return
+
+        try:
+            current_time = time.time()
+
+            if current_time - self.last_remote_check >= self.remote_check_interval:
                 self.last_remote_check = current_time
 
                 if not self.remote_socket:
                     self._connect_to_remote()
                 else:
                     try:
+                        # Test connection with keepalive
                         self.remote_socket.send(b'\n')
                     except Exception as e:
                         self.logger.warning(f"Remote connection test failed: {e}")
                         self.remote_socket = None
+                        # Connection lost, will reconnect on next check
+
+        except Exception as e:
+            self.logger.error(f"Error checking remote connection: {e}")
+            if self.remote_socket:
+                try:
+                    self.remote_socket.close()
+                except:
+                    pass
+                self.remote_socket = None
 
     def _init_serial(self):
         """Initialize serial port with device configuration."""
@@ -1347,14 +1371,27 @@ class PicADSBMultiplexer:
         return True
 
     def run(self):
-        """Main operation loop."""
+        """
+        Main operation loop.
+
+        Features:
+        - Serial data processing
+        - Client connection handling
+        - Message broadcasting
+        - Statistics updates
+        - Optional remote connection
+        - Error recovery
+        """
         self.logger.info("Starting multiplexer...")
         last_sync_check = time.time()
         last_heartbeat = time.time()
 
-        # Connect to remote server if specified
-        if self.remote_host and self.remote_port:
+        # Initialize remote connection if configured
+        if all([self.remote_host, self.remote_port]):
             self._connect_to_remote()
+            self.logger.info(f"Remote connection enabled: {self.remote_host}:{self.remote_port}")
+        else:
+            self.logger.info("Remote connection disabled")
 
         try:
             while self.running:
@@ -1368,10 +1405,11 @@ class PicADSBMultiplexer:
 
                     self._process_serial_data()
 
-                    # Check and maintain remote connection
-                    self._check_remote_connection()
+                    # Check remote connection only if configured
+                    if all([self.remote_host, self.remote_port]):
+                        self._check_remote_connection()
 
-                    # Add remote_socket to read list if it exists
+                    # Prepare sockets for select()
                     sockets_to_read = [self.server_socket] + self.clients
                     if self.remote_socket:
                         sockets_to_read.append(self.remote_socket)
@@ -1382,16 +1420,13 @@ class PicADSBMultiplexer:
                             if sock is self.server_socket:
                                 self._accept_new_client()
                             elif sock is self.remote_socket:
-                                # Handle data from remote server
                                 try:
                                     data = sock.recv(1024)
                                     if not data:
                                         self.logger.warning("Remote server disconnected")
                                         self.remote_socket = None
-                                        # Try to reconnect
-                                        self._connect_to_remote()
                                     else:
-                                        # Process received data if needed
+                                        # Process remote data if needed
                                         pass
                                 except Exception as e:
                                     self.logger.error(f"Error receiving from remote: {e}")
@@ -1401,6 +1436,7 @@ class PicADSBMultiplexer:
                     except select.error:
                         pass
 
+                    # Process message queue
                     while not self.message_queue.empty():
                         try:
                             message = self.message_queue.get_nowait()
@@ -1408,8 +1444,8 @@ class PicADSBMultiplexer:
                         except queue.Empty:
                             break
 
+                    # Periodic checks
                     current_time = time.time()
-
                     if current_time - last_sync_check >= self.SYNC_CHECK_INTERVAL:
                         self._check_sync_state()
                         last_sync_check = current_time
