@@ -1510,10 +1510,10 @@ if __name__ == '__main__':
                       help='Log level (default: INFO)')
     parser.add_argument('--no-init', action='store_true',
                       help='Skip device initialization')
-    parser.add_argument('--remote-host',
-                      help='Remote server host to connect to')
-    parser.add_argument('--remote-port', type=int,
-                      help='Remote server port to connect to')
+    parser.add_argument('--remote-host', type=str, default=None,
+                      help='Remote server host to connect to (optional)')
+    parser.add_argument('--remote-port', type=int, default=None,
+                      help='Remote server port to connect to (optional)')
 
     args = parser.parse_args()
 
