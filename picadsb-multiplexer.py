@@ -774,36 +774,78 @@ class PicADSBMultiplexer:
         except Exception as e:
             self.logger.error(f"Error during shutdown: {e}")
 
-
     def _update_stats(self):
-        """Update and log periodic statistics."""
-        current_time = time.time()
-        if current_time - self.last_stats_update >= self.stats_interval:
-            messages_per_minute = (self.stats['messages_processed'] -
-                                 self.stats['last_minute_count'])
+        """
+        Update and log periodic statistics with enhanced metrics.
 
-            bytes_per_minute = self.stats['bytes_processed'] - \
-                              getattr(self, '_last_bytes_processed', 0)
+        Features:
+        - Messages per minute calculation
+        - Data throughput in KB/s
+        - Memory usage monitoring
+        - Queue utilization
+        - Error rate calculation
+        - Client connection stats
+        """
+        try:
+            current_time = time.time()
+            if current_time - self.last_stats_update >= self.stats_interval:
+                # Calculate message rate
+                messages_per_minute = (self.stats['messages_processed'] -
+                                     self.stats['last_minute_count'])
 
-            self.logger.info(
-                f"Statistics:\n"
-                f"  Messages/min: {messages_per_minute}\n"
-                f"  Bytes/min: {bytes_per_minute}\n"
-                f"  Total messages: {self.stats['messages_processed']}\n"
-                f"  Total bytes: {self.stats['bytes_processed']}\n"
-                f"  Dropped messages: {self.stats['messages_dropped']}\n"
-                f"  Invalid messages: {self.stats['invalid_messages']}\n"
-                f"  Buffer overflows: {self.stats['buffer_overflows']}\n"
-                f"  Sync losses: {self.stats['sync_losses']}\n"
-                f"  Errors: {self.stats['errors']}\n"
-                f"  Connected clients: {self.stats['clients_current']}\n"
-                f"  Queue: {self.message_queue.qsize()}/{self.message_queue.maxsize}"
-            )
+                # Calculate data throughput
+                bytes_per_minute = self.stats['bytes_processed'] - \
+                                  getattr(self, '_last_bytes_processed', 0)
+                kb_per_minute = bytes_per_minute / 1024  # Convert to KB
 
-            self.stats['messages_per_minute'] = messages_per_minute
-            self.stats['last_minute_count'] = self.stats['messages_processed']
-            self._last_bytes_processed = self.stats['bytes_processed']
-            self.last_stats_update = current_time
+                # Calculate error rate
+                total_messages = max(1, self.stats['messages_processed'])
+                error_rate = (self.stats['errors'] / total_messages) * 100
+
+                # Calculate queue utilization
+                queue_size = self.message_queue.qsize()
+                queue_capacity = self.message_queue.maxsize
+                queue_utilization = (queue_size / queue_capacity) * 100 if queue_capacity > 0 else 0
+
+                # Get process memory usage
+                try:
+                    import psutil
+                    process = psutil.Process()
+                    memory_mb = process.memory_info().rss / 1024 / 1024
+                except ImportError:
+                    memory_mb = 0
+
+                # Format uptime
+                uptime = int(current_time - self.stats['start_time'])
+                hours = uptime // 3600
+                minutes = (uptime % 3600) // 60
+                seconds = uptime % 60
+
+                self.logger.info(
+                    f"Statistics:\n"
+                    f"  Uptime: {hours:02d}:{minutes:02d}:{seconds:02d}\n"
+                    f"  Messages/min: {messages_per_minute}\n"
+                    f"  Data rate: {kb_per_minute:.2f} KB/min\n"
+                    f"  Total messages: {self.stats['messages_processed']}\n"
+                    f"  Total data: {self.stats['bytes_processed']/1024:.2f} KB\n"
+                    f"  Dropped messages: {self.stats['messages_dropped']}\n"
+                    f"  Invalid messages: {self.stats['invalid_messages']}\n"
+                    f"  Buffer overflows: {self.stats['buffer_overflows']}\n"
+                    f"  Sync losses: {self.stats['sync_losses']}\n"
+                    f"  Error rate: {error_rate:.2f}%\n"
+                    f"  Memory usage: {memory_mb:.1f} MB\n"
+                    f"  Connected clients: {self.stats['clients_current']}\n"
+                    f"  Queue: {queue_size}/{queue_capacity} ({queue_utilization:.1f}%)"
+                )
+
+                # Update counters for next interval
+                self.stats['messages_per_minute'] = messages_per_minute
+                self.stats['last_minute_count'] = self.stats['messages_processed']
+                self._last_bytes_processed = self.stats['bytes_processed']
+                self.last_stats_update = current_time
+
+        except Exception as e:
+            self.logger.error(f"Error updating statistics: {e}")
 
     def _accept_new_client(self):
         """Accept new client connection."""
