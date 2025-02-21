@@ -314,22 +314,29 @@ class PicADSBMultiplexer:
             raise RuntimeError("Self-test failed, aborting startup")
 
     def _send_heartbeat(self):
-        """Send Beast format heartbeat message."""
+        """
+        Send Beast format heartbeat message (Mode-A null message).
+        Includes proper framing with escape sequences.
+        """
         try:
-            # Create message WITHOUT escape byte first
-            msg = bytearray()
-            msg.append(BeastFormat.TYPE_MODEA)
-            msg.extend(self.timestamp_gen.get_timestamp())
-            msg.append(0xFF)
-            msg.extend([0x00, 0x00])
+            # Create message with initial escape byte
+            message = bytearray([BeastFormat.ESCAPE])  # Start marker
 
-            # Calculate CRC
-            crc = CRC24.compute(bytes(msg))
-            msg.append(crc)
+            # Build data portion
+            data = bytearray()
+            data.append(BeastFormat.TYPE_MODEA)  # Type
+            data.extend(self.timestamp_gen.get_timestamp())  # 6 bytes timestamp
+            data.append(0xFF)  # Signal level
+            data.extend([0x00, 0x00])  # Null Mode-A data
 
-            # Now create final message with escape sequences
-            final_msg = self._escape_beast_data(bytes(msg))
+            # Calculate CRC on data portion
+            crc = CRC24.compute(bytes(data))
+            data.append(crc)
 
+            # Add escaped data to message
+            message.extend(self._escape_beast_data(data))
+
+            final_msg = bytes(message)
             self.logger.debug(f"Heartbeat message: {final_msg.hex().upper()}")
 
             # Send to clients
@@ -977,45 +984,54 @@ class PicADSBMultiplexer:
           return b''
 
     def _create_beast_message(self, msg_type: int, data: bytes, timestamp: bytes = None) -> bytes:
-      """
-      Create Beast format message with proper framing and escaping.
+        """
+        Create Beast format message with proper framing and escaping.
 
-      Args:
-          msg_type: Message type (0x31-0x33)
-          data: Raw message data
-          timestamp: Optional 6-byte timestamp
+        Args:
+            msg_type: Message type (0x31-0x33)
+            data: Raw message data
+            timestamp: Optional 6-byte timestamp
 
-      Returns:
-          Complete Beast message
-      """
-      try:
-          if timestamp is None:
-              timestamp = self.timestamp_gen.get_timestamp()
+        Returns:
+            Complete Beast message
+        """
+        try:
+            if timestamp is None:
+                timestamp = self.timestamp_gen.get_timestamp()
 
-          # Create raw message first
-          message = bytearray([BeastFormat.ESCAPE, msg_type])  # Start marker and type
-          message.extend(timestamp)  # 6 byte timestamp
-          message.append(0xFF)  # Signal level
-          message.extend(data)  # ADS-B data
+            # Create message with initial escape
+            message = bytearray([BeastFormat.ESCAPE])  # Start marker
 
-          # Calculate CRC on unescaped data
-          crc = CRC24.compute(message[1:])  # Skip initial escape
-          message.append(crc)
+            # Build data portion
+            data_portion = bytearray()
+            data_portion.append(msg_type)  # Type
+            data_portion.extend(timestamp)  # 6 byte timestamp
+            data_portion.append(0xFF)  # Signal level
+            data_portion.extend(data)  # ADS-B data
 
-          # Now escape the data portion
-          final_msg = message[:1]  # Keep initial escape
-          final_msg.extend(self._escape_beast_data(message[1:]))
+            # Calculate CRC on data portion
+            crc = CRC24.compute(data_portion)
+            data_portion.append(crc)
 
-          self.logger.debug(f"Created Beast message: {final_msg.hex().upper()}")
-          return bytes(final_msg)
+            # Add escaped data to message
+            message.extend(self._escape_beast_data(data_portion))
 
-      except Exception as e:
-          self.logger.error(f"Beast message creation error: {e}")
-          return None
+            self.logger.debug(f"Created Beast message: {message.hex().upper()}")
+            return bytes(message)
+
+        except Exception as e:
+            self.logger.error(f"Beast message creation error: {e}")
+            return None
 
     def _convert_to_beast(self, message: bytes) -> Optional[bytes]:
         """
         Convert raw ADS-B message to Beast format.
+
+        Args:
+            message: Raw message starting with '*' and ending with ';'
+
+        Returns:
+            Complete Beast format message with escape sequences
         """
         try:
             # Remove markers and convert to bytes
@@ -1040,22 +1056,23 @@ class PicADSBMultiplexer:
                 self.logger.debug(f"Unsupported data length: {len(data)}")
                 return None
 
-            # Build message WITHOUT initial escape byte
-            message = bytearray()
-            message.append(msg_type)
-            message.extend(timestamp)
-            message.append(signal_level)
-            message.extend(data)
+            # Build complete message
+            message = bytearray([BeastFormat.ESCAPE])  # Start with escape byte
+            message.append(msg_type)  # Message type
+            message.extend(timestamp)  # 6 bytes timestamp
+            message.append(signal_level)  # Signal level
+            message.extend(data)  # ADS-B data
 
-            # Calculate CRC on unescaped data
-            crc = CRC24.compute(bytes(message))
+            # Calculate CRC on message without initial escape
+            crc = CRC24.compute(message[1:])
             message.append(crc)
 
-            # Now add escape sequences
-            final_msg = self._escape_beast_data(bytes(message))
+            # Apply escape sequences to everything after initial escape
+            final_msg = bytearray([BeastFormat.ESCAPE])  # Keep initial escape
+            final_msg.extend(self._escape_beast_data(message[1:]))  # Escape rest of message
 
             self.logger.debug(f"Converted to Beast: {final_msg.hex().upper()}")
-            return final_msg
+            return bytes(final_msg)
 
         except Exception as e:
             self.logger.error(f"Beast conversion error: {e}")
