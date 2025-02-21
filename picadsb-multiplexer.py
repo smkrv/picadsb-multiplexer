@@ -332,15 +332,10 @@ class PicADSBMultiplexer:
             # Now create final message with escape sequences
             final_msg = bytearray([BeastFormat.ESCAPE])
 
-            # Apply escape sequences
-            for b in msg:
-                if b == BeastFormat.ESCAPE:
-                    final_msg.extend([BeastFormat.ESCAPE, BeastFormat.ESCAPE])
-                else:
-                    final_msg.append(b)
+            # Apply escape sequences (adds initial escape byte)
+            final_msg = self._escape_beast_data(bytes(msg))
 
-            final_bytes = bytes(final_msg)
-            self.logger.debug(f"Heartbeat message: {final_bytes.hex().upper()}")
+            self.logger.debug(f"Heartbeat message: {final_msg.hex().upper()}")
 
             # Send to clients
             disconnected = []
@@ -923,17 +918,11 @@ class PicADSBMultiplexer:
     def _escape_beast_data(self, data: bytes) -> bytes:
         """
         Apply Beast format escape sequences.
-
-        Escapes 0x1A bytes by doubling them according to Beast protocol specification.
-
-        Args:
-            data: Raw message bytes
-
-        Returns:
-            Escaped message bytes
+        Adds initial escape byte and escapes 0x1A in data.
         """
         try:
-            escaped = bytearray()
+            escaped = bytearray([BeastFormat.ESCAPE])  # Start with escape byte
+
             for byte in data:
                 if byte == BeastFormat.ESCAPE:
                     escaped.extend([BeastFormat.ESCAPE, BeastFormat.ESCAPE])
@@ -944,7 +933,7 @@ class PicADSBMultiplexer:
 
         except Exception as e:
             self.logger.error(f"Beast data escape error: {e}")
-            return data  # Return original data on error
+            return data
 
     def _unescape_beast_data(self, data: bytes) -> bytes:
         """
@@ -1025,30 +1014,22 @@ class PicADSBMultiplexer:
                 self.logger.debug(f"Unsupported data length: {len(data)}")
                 return None
 
-            # Build message WITHOUT escape byte first
+            # Build message WITHOUT initial escape byte
             message = bytearray()
             message.append(msg_type)  # Message type
             message.extend(timestamp)  # 6 bytes timestamp
             message.append(signal_level)  # Signal level
             message.extend(data)  # ADS-B data
 
-            # Calculate CRC for message without escape byte
+            # Calculate CRC
             crc = CRC24.compute(bytes(message))
             message.append(crc)  # Add CRC byte
 
-            # Now add escape byte and apply escaping
-            final_msg = bytearray([BeastFormat.ESCAPE])
+            # Now add escape sequences
+            final_msg = self._escape_beast_data(bytes(message))
 
-            # Apply escape sequences for the rest of the message
-            for b in message:
-                if b == BeastFormat.ESCAPE:
-                    final_msg.extend([BeastFormat.ESCAPE, BeastFormat.ESCAPE])
-                else:
-                    final_msg.append(b)
-
-            final_bytes = bytes(final_msg)
-            self.logger.debug(f"Converted to Beast: {final_bytes.hex().upper()}")
-            return final_bytes
+            self.logger.debug(f"Converted to Beast: {final_msg.hex().upper()}")
+            return final_msg
 
         except Exception as e:
             self.logger.error(f"Beast conversion error: {e}")
