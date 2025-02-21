@@ -35,11 +35,18 @@ fi
 # Set device permissions
 chmod 666 ${ADSB_DEVICE}
 
-# Start the multiplexer
-exec python3 -u picadsb-multiplexer.py \
-    --port ${ADSB_TCP_PORT} \
-    --remote-port ${ADSB_REMOTE_PORT} \
-    --remote-host ${ADSB_REMOTE_HOST} \
-    --serial ${ADSB_DEVICE} \
-    --log-level ${ADSB_LOG_LEVEL} \
-    $([ "$ADSB_NO_INIT" = "true" ] && echo "--no-init")
+# Construct command with basic parameters
+CMD="python3 -u picadsb-multiplexer.py --port ${ADSB_TCP_PORT} --serial ${ADSB_DEVICE} --log-level ${ADSB_LOG_LEVEL}"
+
+# Add optional remote parameters only if both host and port are set
+if [ ! -z "${ADSB_REMOTE_HOST}" ] && [ ! -z "${ADSB_REMOTE_PORT}" ]; then
+    CMD="${CMD} --remote-host ${ADSB_REMOTE_HOST} --remote-port ${ADSB_REMOTE_PORT}"
+fi
+
+# Add no-init flag if set
+if [ "${ADSB_NO_INIT}" = "true" ]; then
+    CMD="${CMD} --no-init"
+fi
+
+# Execute the constructed command
+exec ${CMD}
