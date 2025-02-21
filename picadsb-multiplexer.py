@@ -314,25 +314,20 @@ class PicADSBMultiplexer:
             raise RuntimeError("Self-test failed, aborting startup")
 
     def _send_heartbeat(self):
-        """
-        Send Beast format heartbeat message (Mode-A null message).
-        """
+        """Send Beast format heartbeat message."""
         try:
             # Create message WITHOUT escape byte first
             msg = bytearray()
-            msg.append(BeastFormat.TYPE_MODEA)  # Type
-            msg.extend(self.timestamp_gen.get_timestamp())  # Timestamp
-            msg.append(0xFF)  # Signal level
-            msg.extend([0x00, 0x00])  # Null Mode-A data
+            msg.append(BeastFormat.TYPE_MODEA)
+            msg.extend(self.timestamp_gen.get_timestamp())
+            msg.append(0xFF)
+            msg.extend([0x00, 0x00])
 
             # Calculate CRC
             crc = CRC24.compute(bytes(msg))
             msg.append(crc)
 
             # Now create final message with escape sequences
-            final_msg = bytearray([BeastFormat.ESCAPE])
-
-            # Apply escape sequences (adds initial escape byte)
             final_msg = self._escape_beast_data(bytes(msg))
 
             self.logger.debug(f"Heartbeat message: {final_msg.hex().upper()}")
@@ -341,7 +336,7 @@ class PicADSBMultiplexer:
             disconnected = []
             for client in self.clients:
                 try:
-                    sent = client.send(final_bytes)
+                    sent = client.send(final_msg)
                     if sent == 0:
                         raise BrokenPipeError("Zero bytes sent")
                 except Exception as e:
@@ -355,7 +350,7 @@ class PicADSBMultiplexer:
             # Send to remote
             if self.remote_socket:
                 try:
-                    self.remote_socket.send(final_bytes)
+                    self.remote_socket.send(final_msg)
                 except Exception as e:
                     self.logger.error(f"Remote heartbeat failed: {e}")
                     self.remote_socket = None
@@ -1006,9 +1001,9 @@ class PicADSBMultiplexer:
             signal_level = 0xFF
 
             # Determine message type
-            if len(data) == 7:  # Mode-S short
+            if len(data) == 7:
                 msg_type = BeastFormat.TYPE_MODES_SHORT
-            elif len(data) == 14:  # Mode-S long
+            elif len(data) == 14:
                 msg_type = BeastFormat.TYPE_MODES_LONG
             else:
                 self.logger.debug(f"Unsupported data length: {len(data)}")
@@ -1016,14 +1011,14 @@ class PicADSBMultiplexer:
 
             # Build message WITHOUT initial escape byte
             message = bytearray()
-            message.append(msg_type)  # Message type
-            message.extend(timestamp)  # 6 bytes timestamp
-            message.append(signal_level)  # Signal level
-            message.extend(data)  # ADS-B data
+            message.append(msg_type)
+            message.extend(timestamp)
+            message.append(signal_level)
+            message.extend(data)
 
-            # Calculate CRC
+            # Calculate CRC on unescaped data
             crc = CRC24.compute(bytes(message))
-            message.append(crc)  # Add CRC byte
+            message.append(crc)
 
             # Now add escape sequences
             final_msg = self._escape_beast_data(bytes(message))
