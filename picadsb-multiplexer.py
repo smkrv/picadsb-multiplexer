@@ -627,76 +627,60 @@ class PicADSBMultiplexer:
         return True
 
     def _process_serial_data(self):
-        """Process incoming data from the ADSB device with relaxed validation."""
+        """Process incoming data from the ADSB device with optimized buffering."""
         try:
-            # Check if serial port is available
             if not self.ser.is_open:
                 self.logger.error("Serial port is closed")
                 return
 
-            # Check for available data
             if self.ser.in_waiting:
                 self._last_data_time = time.time()
-                data = self.ser.read(self.ser.in_waiting)
+                # Читаем больший буфер за раз
+                data = self.ser.read(min(self.ser.in_waiting, 8192))
                 self.stats['bytes_received'] += len(data)
 
+                # Используем bytearray для более эффективной конкатенации
+                message = bytearray()
+
                 for byte in data:
-                    byte = bytes([byte])
+                    byte_val = bytes([byte])
 
-                    # Extended set of message start markers
-                    if byte in b'*#@$%&':
-                        # Only log really long incomplete messages
-                        if self._buffer and len(self._buffer) > 5:
-                            self.logger.debug(f"Incomplete message: {self._buffer!r}")
-                        self._buffer = byte
+                    if byte_val in b'*#@$%&':
+                        if message and len(message) > 5:
+                            self.logger.debug(f"Incomplete message: {bytes(message)!r}")
+                        message = bytearray([byte])
                         continue
 
-                    # Skip bytes until start marker
-                    if not self._buffer:
+                    if not message:
                         continue
 
-                    # Message terminator handling
-                    if byte == b';':
-                        self._buffer += byte
+                    if byte_val == b';':
+                        message.append(byte)
+                        final_msg = bytes(message)
 
-                        # Try to process the message even if validation fails
-                        if self.validate_message(self._buffer):
+                        if self.validate_message(final_msg):
                             try:
-                                self.message_queue.put_nowait(self._buffer + b'\n')
+                                self.message_queue.put_nowait(final_msg + b'\n')
                                 self.stats['messages_processed'] += 1
-                                self.logger.debug(f"Processed message: {self._buffer!r}")
+                                self.logger.debug(f"Processed message: {final_msg!r}")
                             except queue.Full:
                                 self.stats['messages_dropped'] += 1
                         else:
-                            # Attempt to recover partial message if it's long enough
-                            if len(self._buffer) > 3:
+                            if len(message) > 3:
                                 try:
-                                    self.message_queue.put_nowait(self._buffer + b'\n')
+                                    self.message_queue.put_nowait(final_msg + b'\n')
                                     self.stats['recovered_messages'] += 1
-                                    self.logger.debug(f"Recovered partial message: {self._buffer!r}")
+                                    self.logger.debug(f"Recovered partial message: {final_msg!r}")
                                 except queue.Full:
                                     self.stats['messages_dropped'] += 1
                             else:
                                 self.stats['invalid_messages'] += 1
-                        self._buffer = b''
+                        message = bytearray()
                     else:
-                        self._buffer += byte
-                        # Handle buffer overflow by keeping the last part
-                        if len(self._buffer) > self.MAX_MESSAGE_LENGTH:
-                            self._buffer = self._buffer[-self.MAX_MESSAGE_LENGTH:]
+                        message.append(byte)
+                        if len(message) > self.MAX_MESSAGE_LENGTH:
+                            message = message[-self.MAX_MESSAGE_LENGTH:]
                             self.stats['buffer_truncated'] += 1
-
-                # Handle timeout for incomplete messages
-                if self._buffer and time.time() - self._last_data_time > 1.0:
-                    if len(self._buffer) > 3:
-                        self._buffer += b';'  # Add terminator
-                        try:
-                            self.message_queue.put_nowait(self._buffer + b'\n')
-                            self.stats['timeout_processed'] += 1
-                            self.logger.debug(f"Timeout processed message: {self._buffer!r}")
-                        except queue.Full:
-                            self.stats['messages_dropped'] += 1
-                    self._buffer = b''
 
         except Exception as e:
             self.logger.error(f"Error in serial processing: {e}")
