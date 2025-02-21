@@ -1130,51 +1130,36 @@ class PicADSBMultiplexer:
             data: Message to broadcast (raw or Beast format)
         """
         try:
-            # Convert to Beast format if needed
-            if data.startswith(bytes([BeastFormat.ESCAPE])):
-                beast_msg = data
-            else:
+            if not data.startswith(bytes([BeastFormat.ESCAPE])):
                 beast_msg = self._convert_to_beast(data)
                 if not beast_msg:
                     return
-
-            # Validate Beast message
-            if not self._validate_beast_message(beast_msg):
-                self.logger.warning(f"Invalid Beast message: {beast_msg.hex()}")
-                return
+            else:
+                beast_msg = data
 
             current_time = time.time()
 
-            # Check broadcast delay
-            if hasattr(self, '_last_broadcast_time'):
-                delay = current_time - self._last_broadcast_time
-                if delay > 1.0:
-                    self.logger.warning(f"Large broadcast delay detected: {delay:.3f}s")
+            writable = []
+            try:
+                _, writable, _ = select.select([], self.clients, [], 0)
+            except select.error:
+                pass
 
-            self._last_broadcast_time = current_time
-
-            # Broadcast to clients
-            disconnected_clients = []
-            for client in self.clients:
+            disconnected = []
+            for client in writable:
                 try:
-                    sent = client.send(beast_msg)
-                    if sent == 0:
-                        raise BrokenPipeError("Zero bytes sent")
+                    client.send(beast_msg)
                     self.client_last_active[client] = current_time
                 except Exception as e:
-                    self.logger.debug(f"Client broadcast error: {e}")
-                    disconnected_clients.append(client)
+                    disconnected.append(client)
 
-            # Handle remote server
             if self.remote_socket:
                 try:
                     self.remote_socket.send(beast_msg)
                 except Exception as e:
-                    self.logger.error(f"Remote server error: {e}")
                     self.remote_socket = None
 
-            # Clean up disconnected clients
-            for client in disconnected_clients:
+            for client in disconnected:
                 self._remove_client(client)
 
         except Exception as e:
