@@ -316,51 +316,37 @@ class PicADSBMultiplexer:
     def _send_heartbeat(self):
         """
         Send Beast format heartbeat message (Mode-A null message).
-
-        Message structure:
-        - 0x1A (escape)
-        - 0x31 (Mode-A type)
-        - 6 bytes timestamp
-        - 1 byte signal level (0xFF)
-        - 2 bytes Mode-A data (0x00, 0x00)
-        - 1 byte CRC
         """
         try:
-            # Get current timestamp
-            timestamp = self.timestamp_gen.get_timestamp()
+            # Create message WITHOUT escape byte first
+            msg = bytearray()
+            msg.append(BeastFormat.TYPE_MODEA)  # Type
+            msg.extend(self.timestamp_gen.get_timestamp())  # Timestamp
+            msg.append(0xFF)  # Signal level
+            msg.extend([0x00, 0x00])  # Null Mode-A data
 
-            # Create message components
-            msg_type = BeastFormat.TYPE_MODEA
-            signal_level = 0xFF
-            data = bytes([0x00, 0x00])  # Null Mode-A data
+            # Calculate CRC
+            crc = CRC24.compute(bytes(msg))
+            msg.append(crc)
 
-            # Construct message for CRC computation
-            msg_for_crc = bytearray()
-            msg_for_crc.append(msg_type)
-            msg_for_crc.extend(timestamp)
-            msg_for_crc.append(signal_level)
-            msg_for_crc.extend(data)
-
-            # Compute CRC
-            crc = CRC24.compute(bytes(msg_for_crc))
-
-            # Construct complete message
-            message = bytearray()
-            message.append(BeastFormat.ESCAPE)
-            message.extend(msg_for_crc)
-            message.append(crc)  # Add single CRC byte
+            # Now create final message with escape sequences
+            final_msg = bytearray([BeastFormat.ESCAPE])
 
             # Apply escape sequences
-            final_msg = self._escape_beast_data(bytes(message))
+            for b in msg:
+                if b == BeastFormat.ESCAPE:
+                    final_msg.extend([BeastFormat.ESCAPE, BeastFormat.ESCAPE])
+                else:
+                    final_msg.append(b)
 
-            # Log the message in debug mode
-            self.logger.debug(f"Heartbeat message: {final_msg.hex().upper()}")
+            final_bytes = bytes(final_msg)
+            self.logger.debug(f"Heartbeat message: {final_bytes.hex().upper()}")
 
-            # Send to all clients
+            # Send to clients
             disconnected = []
             for client in self.clients:
                 try:
-                    sent = client.send(final_msg)
+                    sent = client.send(final_bytes)
                     if sent == 0:
                         raise BrokenPipeError("Zero bytes sent")
                 except Exception as e:
@@ -371,10 +357,10 @@ class PicADSBMultiplexer:
             for client in disconnected:
                 self._remove_client(client)
 
-            # Send to remote if configured
+            # Send to remote
             if self.remote_socket:
                 try:
-                    self.remote_socket.send(final_msg)
+                    self.remote_socket.send(final_bytes)
                 except Exception as e:
                     self.logger.error(f"Remote heartbeat failed: {e}")
                     self.remote_socket = None
@@ -1014,13 +1000,12 @@ class PicADSBMultiplexer:
 
     def _convert_to_beast(self, message: bytes) -> Optional[bytes]:
         """
-        Convert raw ADS-B message to Beast format with single-byte CRC.
+        Convert raw ADS-B message to Beast format.
         """
         try:
             # Remove markers and convert to bytes
             raw_data = message[1:-1].decode().strip(';')
 
-            # Convert to bytes
             try:
                 data = bytes.fromhex(raw_data)
             except ValueError as e:
@@ -1029,7 +1014,7 @@ class PicADSBMultiplexer:
 
             # Get timestamp and signal level
             timestamp = self.timestamp_gen.get_timestamp()
-            signal_level = bytes([0xFF])
+            signal_level = 0xFF
 
             # Determine message type
             if len(data) == 7:  # Mode-S short
@@ -1040,23 +1025,30 @@ class PicADSBMultiplexer:
                 self.logger.debug(f"Unsupported data length: {len(data)}")
                 return None
 
-            # Build message
+            # Build message WITHOUT escape byte first
             message = bytearray()
-            message.append(BeastFormat.ESCAPE)  # Start marker
             message.append(msg_type)  # Message type
             message.extend(timestamp)  # 6 bytes timestamp
-            message.append(0xFF)  # Signal level
+            message.append(signal_level)  # Signal level
             message.extend(data)  # ADS-B data
 
-            # Calculate single-byte CRC
-            crc = CRC24.compute(bytes(message[1:]))  # CRC of everything after escape
+            # Calculate CRC for message without escape byte
+            crc = CRC24.compute(bytes(message))
             message.append(crc)  # Add CRC byte
 
-            # Apply escape sequences
-            final_msg = self._escape_beast_data(bytes(message))
+            # Now add escape byte and apply escaping
+            final_msg = bytearray([BeastFormat.ESCAPE])
 
-            self.logger.debug(f"Converted to Beast: {final_msg.hex().upper()}")
-            return final_msg
+            # Apply escape sequences for the rest of the message
+            for b in message:
+                if b == BeastFormat.ESCAPE:
+                    final_msg.extend([BeastFormat.ESCAPE, BeastFormat.ESCAPE])
+                else:
+                    final_msg.append(b)
+
+            final_bytes = bytes(final_msg)
+            self.logger.debug(f"Converted to Beast: {final_bytes.hex().upper()}")
+            return final_bytes
 
         except Exception as e:
             self.logger.error(f"Beast conversion error: {e}")
@@ -1064,7 +1056,7 @@ class PicADSBMultiplexer:
 
     def _validate_beast_message(self, message: bytes) -> bool:
         """
-        Validate Beast format message structure and integrity. 
+        Validate Beast format message structure and integrity.
 
         Args:
             message: Complete Beast message with escape sequences
