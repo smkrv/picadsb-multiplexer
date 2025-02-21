@@ -1014,7 +1014,7 @@ class PicADSBMultiplexer:
             result[pos] = BeastFormat.ESCAPE
             pos += 1
 
-            raw_data = message[1:-1]
+            raw_data = message[1:-1].strip(b';')
             try:
                 data = bytes.fromhex(raw_data.decode())
             except ValueError as e:
@@ -1022,6 +1022,9 @@ class PicADSBMultiplexer:
                 return None
 
             msg_type = BeastFormat.TYPE_MODES_SHORT if len(data) == 7 else BeastFormat.TYPE_MODES_LONG
+            if len(data) not in (7, 14):
+                self.logger.debug(f"Unsupported data length: {len(data)}")
+                return None
 
             result[pos] = msg_type
             pos += 1
