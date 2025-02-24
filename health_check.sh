@@ -3,8 +3,8 @@
 # Health check script for ADS-B multiplexer
 # Performs basic operational checks
 
-# Check if main process is running
-if ! pgrep -f "python3 -u picadsb-multiplexer.py" > /dev/null; then
+# Check if main process is running (using ps instead of pgrep)
+if ! ps aux | grep "python3 -u picadsb-multiplexer.py" | grep -v grep > /dev/null; then
     echo "Process not running"
     exit 1
 fi
