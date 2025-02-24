@@ -1370,6 +1370,54 @@ class PicADSBMultiplexer:
         self.logger.info("All CRC tests passed successfully")
         return True
 
+    def check_health(self) -> bool:
+        """
+        Check if multiplexer is healthy.
+
+        Performs basic health checks appropriate for ADS-B receiver operation:
+        - Serial port status
+        - Data reception within 4 hours (accommodating low traffic periods)
+        - Basic message processing verification
+        - System operational status
+
+        Returns:
+            bool: True if system is operating normally, False if issues detected
+
+        Note:
+            Long periods without data are normal for ADS-B receivers in low traffic areas,
+            so timeout is set to 4 hours to avoid false positives.
+        """
+        try:
+            # Check if serial port is open and system is running
+            if not hasattr(self, 'ser') or not self.ser.is_open:
+                self.logger.error("Health check failed: Serial port not open")
+                return False
+
+            # Check last data received time (4 hours timeout)
+            current_time = time.time()
+            data_gap = current_time - self._last_data_time
+            if data_gap > 14400:  # 4 hours in seconds
+                self.logger.error(f"Health check failed: No data received for {data_gap/3600:.1f} hours")
+                return False
+
+            # Check if system is processing messages at all
+            uptime = current_time - self.stats['start_time']
+            if self.stats['messages_processed'] == 0 and uptime > 300:
+                # Only fail if no messages after 5 minutes of startup
+                self.logger.error(f"Health check failed: No messages processed in {uptime:.1f} seconds since startup")
+                return False
+
+            self.logger.debug(
+                f"Health check passed: Uptime={uptime:.1f}s, "
+                f"Last data={data_gap:.1f}s ago, "
+                f"Messages={self.stats['messages_processed']}"
+            )
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Health check error: {e}")
+            return False
+
     def run(self):
         """
         Main operation loop.
