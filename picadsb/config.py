@@ -13,6 +13,7 @@ class Config:
     """All configurable parameters in one place."""
 
     # Network
+    bind_address: str = "0.0.0.0"
     tcp_port: int = 30002
     max_clients: int = 50
     listen_backlog: int = 10
@@ -34,7 +35,6 @@ class Config:
     heartbeat_interval: int = 30
     stats_interval: int = 60
     no_data_timeout: int = 600
-    sync_check_interval: int = 1
 
     # Health check
     health_no_data_timeout: int = 14400

@@ -2,7 +2,6 @@ FROM --platform=$TARGETPLATFORM python:3.11-slim
 
 # Install required system packages
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    udev \
     curl \
     procps \
     iproute2 \
@@ -19,7 +18,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application
 COPY picadsb-multiplexer.py .
-COPY adsb_message_parser.py .
 COPY picadsb/ ./picadsb/
 COPY entrypoint.sh .
 COPY health_check.sh .

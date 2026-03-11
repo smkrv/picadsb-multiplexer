@@ -38,7 +38,13 @@ fi
 # Check if logs directory exists and manage size
 if [ -d "/app/logs" ]; then
     current_size=$(du -sm /app/logs | cut -f1)
-    max_size="${MAX_LOG_SIZE%M}"
+    # Strip trailing M/m/MB/mb suffix to get numeric value
+    max_size=$(echo "${MAX_LOG_SIZE}" | sed 's/[Mm][Bb]\?$//')
+
+    if ! echo "$max_size" | grep -qE '^[0-9]+$'; then
+        echo "Warning: invalid MAX_LOG_SIZE='${MAX_LOG_SIZE}', using default 100M"
+        max_size=100
+    fi
 
     if [ "$current_size" -gt "$max_size" ]; then
         echo "Log directory size ($current_size MB) exceeds limit ($max_size MB). Cleaning old logs..."
