@@ -5,13 +5,25 @@ services:
     restart: unless-stopped
     devices:
       - /dev/ttyACM0:/dev/ttyACM0
+    group_add:
+      - dialout
     ports:
       - "31002:31002"
     environment:
       - ADSB_TCP_PORT=31002
       - ADSB_DEVICE=/dev/ttyACM0
       - ADSB_LOG_LEVEL=INFO
-      - ADSB_REMOTE_HOST= # Indicate if required
-      - ADSB_REMOTE_PORT= # Indicate if required
+      - ADSB_REMOTE_HOST=
+      - ADSB_REMOTE_PORT=
     volumes:
       - ./logs:/app/logs
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    mem_limit: 256m
+    memswap_limit: 256m
+    pids_limit: 50

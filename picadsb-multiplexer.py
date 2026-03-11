@@ -193,6 +193,7 @@ class PicADSBMultiplexer:
     MAX_RECONNECT_DELAY = 300
     SYNC_CHECK_INTERVAL = 1
     KEEPALIVE_MARKER = b'\n'
+    HEARTBEAT_INTERVAL = 30
     MAX_CLIENTS = 50
 
     def _setup_logging(self, log_level: str):
@@ -260,7 +261,6 @@ class PicADSBMultiplexer:
         self._sync_state = True
         self._last_sync_time = time.time()
         # Add heartbeat configuration
-        self.HEARTBEAT_INTERVAL = 30  # 30 seconds
         self._last_connect_attempt = 0
 
         # Statistics
@@ -832,14 +832,20 @@ class PicADSBMultiplexer:
             self.logger.error(f"Error updating statistics: {e}")
 
     def _accept_new_client(self):
-        """Accept new client connection."""
+        """Accept new client connection with limit enforcement."""
         try:
             client_socket, address = self.server_socket.accept()
+
+            if len(self.clients) >= self.MAX_CLIENTS:
+                self.logger.warning(f"Max clients ({self.MAX_CLIENTS}) reached, rejecting {address}")
+                client_socket.close()
+                return
+
             self._configure_client_socket(client_socket)
             self.clients.append(client_socket)
             self.stats['clients_total'] += 1
             self.stats['clients_current'] = len(self.clients)
-            self.logger.info(f"New client connected from {address}")
+            self.logger.info(f"New client connected from {address} ({len(self.clients)}/{self.MAX_CLIENTS})")
         except Exception as e:
             self.logger.error(f"Error accepting client: {e}")
 
