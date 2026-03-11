@@ -20,6 +20,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application
 COPY picadsb-multiplexer.py .
 COPY adsb_message_parser.py .
+COPY picadsb/ ./picadsb/
 COPY entrypoint.sh .
 COPY health_check.sh .
 
@@ -43,6 +44,7 @@ ENV ADSB_TCP_PORT=31002
 ENV ADSB_DEVICE=/dev/ttyACM0
 ENV ADSB_LOG_LEVEL=INFO
 ENV ADSB_NO_INIT=false
+ENV ADSB_MAX_CLIENTS=50
 ENV ADSB_REMOTE_HOST=
 ENV ADSB_REMOTE_PORT=
 
