@@ -185,16 +185,15 @@ class PicADSBMultiplexer:
     """Main multiplexer class that handles device communication and client connections."""
 
     # Constants
-    KEEPALIVE_INTERVAL = 30
     SERIAL_BUFFER_SIZE = 131072
     MAX_MESSAGE_LENGTH = 256
     NO_DATA_TIMEOUT = 600
-    MODE_CHECK_TIMEOUT = 300
-    MAX_RECONNECT_ATTEMPTS = 999
-    RECONNECT_DELAY = 10
+    MAX_RECONNECT_ATTEMPTS = 50
+    RECONNECT_DELAY = 5
+    MAX_RECONNECT_DELAY = 300
     SYNC_CHECK_INTERVAL = 1
-    RESET_TIMEOUT = 5
     KEEPALIVE_MARKER = b'\n'
+    MAX_CLIENTS = 50
 
     def _setup_logging(self, log_level: str):
         """
@@ -255,16 +254,14 @@ class PicADSBMultiplexer:
 
         # Runtime state
         self.running = True
-        self.firmware_version = None
-        self.device_id = None
-        self._buffer = b''
+        self._serial_parse_buffer = bytearray()
         self._last_data_time = time.time()
         self._no_data_logged = False
         self._sync_state = True
         self._last_sync_time = time.time()
         # Add heartbeat configuration
         self.HEARTBEAT_INTERVAL = 30  # 30 seconds
-        self.last_heartbeat = time.time()
+        self._last_connect_attempt = 0
 
         # Statistics
         self.stats = {
@@ -281,16 +278,11 @@ class PicADSBMultiplexer:
             'bytes_received': 0,
             'bytes_processed': 0,
             'invalid_messages': 0,
-            'buffer_overflows': 0,
-            'sync_losses': 0,
             'recovered_messages': 0,
-            'buffer_truncated': 0,
-            'timeout_processed': 0
+            'buffer_truncated': 0
         }
 
         # Timing controls
-        self.last_mode_check = time.time()
-        self.mode_check_interval = 300
         self.last_stats_update = time.time()
         self.stats_interval = 60
         self.last_remote_check = time.time()
@@ -362,8 +354,6 @@ class PicADSBMultiplexer:
                     self.logger.error(f"Remote heartbeat failed: {e}")
                     self.remote_socket = None
 
-            self.last_heartbeat = time.time()
-
         except Exception as e:
             self.logger.error(f"Heartbeat generation failed: {e}")
 
@@ -386,8 +376,7 @@ class PicADSBMultiplexer:
             return
 
         current_time = time.time()
-        if hasattr(self, '_last_connect_attempt') and \
-           current_time - self._last_connect_attempt < 60:
+        if current_time - self._last_connect_attempt < 60:
             return
 
         self._last_connect_attempt = current_time
@@ -407,26 +396,6 @@ class PicADSBMultiplexer:
         except Exception as e:
             self.logger.warning(f"Failed to connect to remote server: {e}")
             self.remote_socket = None
-
-    def _send_to_remote(self, data: bytes):
-        """
-        Send data to remote server in Beast format.
-        """
-        if not self.remote_socket:
-            return
-
-        try:
-            sent = self.remote_socket.send(data)
-            if sent == 0:
-                raise BrokenPipeError("Zero bytes sent")
-
-            self.logger.debug(f"Sent to remote: {data.hex()}")
-
-        except Exception as e:
-            self.logger.error(f"Error sending to remote server: {e}")
-            self.remote_socket = None
-            # Try to reconnect
-            self._connect_to_remote()
 
     def _check_remote_connection(self):
         """
@@ -565,7 +534,7 @@ class PicADSBMultiplexer:
 
             self.ser.reset_input_buffer()
             self.ser.reset_output_buffer()
-            self._buffer = b''
+            self._serial_parse_buffer = bytearray()
 
             if not self._initialize_device():
                 raise Exception("Device reset failed")
@@ -651,7 +620,7 @@ class PicADSBMultiplexer:
         return True
 
     def _process_serial_data(self):
-        """Process incoming data from the ADSB device with optimized buffering."""
+        """Process incoming data from the ADSB device with persistent buffer."""
         try:
             if not self.ser.is_open:
                 self.logger.error("Serial port is closed")
@@ -661,24 +630,23 @@ class PicADSBMultiplexer:
                 self._last_data_time = time.time()
                 data = self.ser.read(min(self.ser.in_waiting, 8192))
                 self.stats['bytes_received'] += len(data)
-
-                message = bytearray()
+                self.stats['bytes_processed'] += len(data)
 
                 for byte in data:
                     byte_val = bytes([byte])
 
                     if byte_val in b'*#@$%&':
-                        if message and len(message) > 5:
-                            self.logger.debug(f"Incomplete message: {bytes(message)!r}")
-                        message = bytearray([byte])
+                        if self._serial_parse_buffer and len(self._serial_parse_buffer) > 5:
+                            self.logger.debug(f"Incomplete message: {bytes(self._serial_parse_buffer)!r}")
+                        self._serial_parse_buffer = bytearray([byte])
                         continue
 
-                    if not message:
+                    if not self._serial_parse_buffer:
                         continue
 
                     if byte_val == b';':
-                        message.append(byte)
-                        final_msg = bytes(message)
+                        self._serial_parse_buffer.append(byte)
+                        final_msg = bytes(self._serial_parse_buffer)
 
                         if self.validate_message(final_msg):
                             try:
@@ -688,7 +656,7 @@ class PicADSBMultiplexer:
                             except queue.Full:
                                 self.stats['messages_dropped'] += 1
                         else:
-                            if len(message) > 3:
+                            if len(self._serial_parse_buffer) > 3:
                                 try:
                                     self.message_queue.put_nowait(final_msg + b'\n')
                                     self.stats['recovered_messages'] += 1
@@ -697,11 +665,11 @@ class PicADSBMultiplexer:
                                     self.stats['messages_dropped'] += 1
                             else:
                                 self.stats['invalid_messages'] += 1
-                        message = bytearray()
+                        self._serial_parse_buffer = bytearray()
                     else:
-                        message.append(byte)
-                        if len(message) > self.MAX_MESSAGE_LENGTH:
-                            message = message[-self.MAX_MESSAGE_LENGTH:]
+                        self._serial_parse_buffer.append(byte)
+                        if len(self._serial_parse_buffer) > self.MAX_MESSAGE_LENGTH:
+                            self._serial_parse_buffer = self._serial_parse_buffer[-self.MAX_MESSAGE_LENGTH:]
                             self.stats['buffer_truncated'] += 1
 
         except Exception as e:
@@ -731,17 +699,23 @@ class PicADSBMultiplexer:
                 self._last_data_time = current_time
 
     def _reconnect(self) -> bool:
-        """Attempt to reconnect to the device with multiple retries."""
+        """Attempt to reconnect to the device with exponential backoff."""
         self.logger.info("Attempting to reconnect...")
+        delay = self.RECONNECT_DELAY
 
         for attempt in range(self.MAX_RECONNECT_ATTEMPTS):
+            if not self.running:
+                return False
+
             try:
-                self.logger.info(f"Reconnection attempt {attempt + 1}/{self.MAX_RECONNECT_ATTEMPTS}")
+                self.logger.info(f"Reconnection attempt {attempt + 1}/{self.MAX_RECONNECT_ATTEMPTS} (delay: {delay}s)")
 
                 if hasattr(self, 'ser') and self.ser.is_open:
                     self.ser.close()
 
-                time.sleep(self.RECONNECT_DELAY)
+                time.sleep(delay)
+                if not self.running:
+                    return False
 
                 self._init_serial()
 
@@ -754,34 +728,22 @@ class PicADSBMultiplexer:
                         self._last_data_time = time.time()
                         self._no_data_logged = False
                         self._sync_state = True
+                        self._serial_parse_buffer = bytearray()
                         return True
                     time.sleep(0.1)
 
             except Exception as e:
                 self.logger.error(f"Reconnection attempt {attempt + 1} failed: {e}")
 
-            self.logger.warning(f"Reconnection attempt {attempt + 1} failed, waiting {self.RECONNECT_DELAY} seconds...")
-            time.sleep(self.RECONNECT_DELAY)
+            # Exponential backoff with cap
+            delay = min(delay * 2, self.MAX_RECONNECT_DELAY)
 
         self.logger.error(f"Failed to reconnect after {self.MAX_RECONNECT_ATTEMPTS} attempts")
         return False
 
     def _check_sync_state(self):
         """Check and maintain synchronization state."""
-        current_time = time.time()
-
-        if not self._sync_state:
-            if current_time - self._last_sync_time > 5:
-                self.logger.warning("Lost synchronization, attempting reset")
-                self._reset_device()
-                return
-
-            if current_time - self._last_sync_time > 1:
-                self.ser.reset_input_buffer()
-                self._buffer = b''
-                self.logger.debug("Resetting input buffer due to sync loss")
-
-        self._last_sync_time = current_time
+        self._last_sync_time = time.time()
 
     def shutdown(self):
         """Gracefully shutdown the device."""
@@ -854,8 +816,6 @@ class PicADSBMultiplexer:
                     f"  Total data: {self.stats['bytes_processed']/1024:.2f} KB\n"
                     f"  Dropped messages: {self.stats['messages_dropped']}\n"
                     f"  Invalid messages: {self.stats['invalid_messages']}\n"
-                    f"  Buffer overflows: {self.stats['buffer_overflows']}\n"
-                    f"  Sync losses: {self.stats['sync_losses']}\n"
                     f"  Error rate: {error_rate:.2f}%\n"
                     f"  Memory usage: {memory_mb:.1f} MB\n"
                     f"  Connected clients: {self.stats['clients_current']}\n"
@@ -947,89 +907,19 @@ class PicADSBMultiplexer:
             self.logger.error(f"Error sending stats to client: {e}")
             self._remove_client(client)
 
-    def _encode_beast_timestamp(self) -> bytes:
-        """
-        Generate 6-byte MLAT timestamp for Beast format.
-
-        Features:
-        - Microsecond precision
-        - Handles 7h58m overflow
-        - UTC midnight-based
-
-        Returns:
-            6-byte timestamp in big-endian order
-        """
-        now = datetime.utcnow().replace(tzinfo=timezone.utc)
-        midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        elapsed = (now - midnight).total_seconds()
-        microseconds = int(elapsed * 1e6) % BeastFormat.MAX_TIMESTAMP
-        return microseconds.to_bytes(6, 'big')
-
     def _escape_beast_data(self, data: bytes) -> bytes:
-      """
-      Apply Beast format escape sequences.
-      Escapes 0x1A bytes in data.
-
-      Args:
-          data: Raw message bytes
-
-      Returns:
-          Escaped message bytes
-      """
-      try:
-          escaped = bytearray()
-
-          for byte in data:
-              if byte == BeastFormat.ESCAPE:
-                  escaped.extend([BeastFormat.ESCAPE, BeastFormat.ESCAPE])
-              else:
-                  escaped.append(byte)
-
-          return bytes(escaped)
-
-      except Exception as e:
-          self.logger.error(f"Beast data escape error: {e}")
-          return data
-
-    def _unescape_beast_data(self, data: bytes) -> bytes:
-      """
-      Remove Beast format escape sequences.
-
-      Args:
-          data: Raw Beast message bytes
-
-      Returns:
-          Unescaped message bytes
-      """
-      try:
-          if not data:
-              return b''
-
-          result = bytearray()
-          i = 0
-
-          while i < len(data):
-              if data[i] == BeastFormat.ESCAPE:
-                  if i + 1 >= len(data):
-                      self.logger.debug("Incomplete escape sequence at end")
-                      break
-
-                  if data[i + 1] == BeastFormat.ESCAPE:
-                      result.append(BeastFormat.ESCAPE)
-                      i += 2
-                  else:
-                      # Single escape is part of framing
-                      result.append(data[i])
-                      i += 1
-              else:
-                  result.append(data[i])
-                  i += 1
-
-          return bytes(result)
-
-      except Exception as e:
-          self.logger.error(f"Beast data unescape error: {e}")
-          return b''
+        """Apply Beast format escape sequences (doubles 0x1A bytes in data)."""
+        try:
+            escaped = bytearray()
+            for byte in data:
+                if byte == BeastFormat.ESCAPE:
+                    escaped.extend([BeastFormat.ESCAPE, BeastFormat.ESCAPE])
+                else:
+                    escaped.append(byte)
+            return bytes(escaped)
+        except Exception as e:
+            self.logger.error(f"Beast data escape error: {e}")
+            return data
 
     def _create_beast_message(self, msg_type: int, data: bytes, timestamp: bytes = None) -> bytes:
         """
@@ -1072,114 +962,30 @@ class PicADSBMultiplexer:
             return None
 
     def _convert_to_beast(self, message: bytes) -> Optional[bytes]:
-        """Convert raw ADS-B message to Beast format with optimized processing."""
+        """Convert raw ADS-B message to Beast format using unified creation path."""
         try:
-            result = bytearray(32)
-            pos = 0
-
-            result[pos] = BeastFormat.ESCAPE
-            pos += 1
-
-            raw_data = message[1:-1].strip(b';')
+            raw_data = message[1:-1].rstrip(b';\n')
             try:
                 data = bytes.fromhex(raw_data.decode())
             except ValueError as e:
                 self.logger.debug(f"Hex conversion error: {e}")
                 return None
 
-            msg_type = BeastFormat.TYPE_MODES_SHORT if len(data) == 7 else BeastFormat.TYPE_MODES_LONG
-            if len(data) not in (7, 14):
+            if len(data) == BeastFormat.MODES_SHORT_LEN:
+                msg_type = BeastFormat.TYPE_MODES_SHORT
+            elif len(data) == BeastFormat.MODES_LONG_LEN:
+                msg_type = BeastFormat.TYPE_MODES_LONG
+            elif len(data) == BeastFormat.MODEA_LEN:
+                msg_type = BeastFormat.TYPE_MODEA
+            else:
                 self.logger.debug(f"Unsupported data length: {len(data)}")
                 return None
 
-            result[pos] = msg_type
-            pos += 1
-
-            timestamp = self.timestamp_gen.get_timestamp()
-            result[pos:pos+6] = timestamp
-            pos += 6
-
-            result[pos] = 0xFF
-            pos += 1
-
-            result[pos:pos+len(data)] = data
-            pos += len(data)
-
-            crc = CRC24.compute(result[1:pos])
-            result[pos] = crc
-            pos += 1
-
-            return bytes(result[:pos])
+            return self._create_beast_message(msg_type, data)
 
         except Exception as e:
             self.logger.error(f"Beast conversion error: {e}")
             return None
-
-    def _validate_beast_message(self, message: bytes) -> bool:
-        """
-        Validate Beast format message structure and integrity.
-
-        Args:
-            message: Complete Beast message with escape sequences
-
-        Returns:
-            True if message is valid
-        """
-        try:
-            if not message or len(message) < 11:
-                self.logger.debug(f"Message too short: {len(message) if message else 0}")
-                return False
-
-            if message[0] != BeastFormat.ESCAPE:
-                self.logger.debug("Missing start escape")
-                return False
-
-            # Get message type
-            msg_type = message[1]
-            if msg_type not in (BeastFormat.TYPE_MODEA,
-                              BeastFormat.TYPE_MODES_SHORT,
-                              BeastFormat.TYPE_MODES_LONG):
-                self.logger.debug(f"Invalid message type: 0x{msg_type:02X}")
-                return False
-
-            # Unescape and validate
-            data = self._unescape_beast_data(message)
-            if not data:
-                return False
-
-            # Verify length after unescaping
-            expected_len = {
-                BeastFormat.TYPE_MODEA: 12,
-                BeastFormat.TYPE_MODES_SHORT: 17,
-                BeastFormat.TYPE_MODES_LONG: 24
-            }.get(msg_type)
-
-            if len(data) != expected_len:
-                self.logger.debug(f"Invalid length after unescape: got {len(data)}, expected {expected_len}")
-                return False
-
-            # Verify CRC
-            return CRC24.verify(data[1:], debug=True)
-
-        except Exception as e:
-            self.logger.error(f"Beast message validation error: {e}")
-            return False
-
-    def _validate_message_length(self, msg_type: int, data: bytes):
-        """
-        Validate message length based on type.
-
-        Args:
-            msg_type: Message type (MODE_S_SHORT or MODE_S_LONG)
-            data: Raw message data
-
-        Raises:
-            ValueError: If message length is invalid
-        """
-        if msg_type == BeastFormat.TYPE_MODES_LONG and len(data) != 14:
-            raise ValueError(f"Invalid long message length: {len(data)}")
-        elif msg_type == BeastFormat.TYPE_MODES_SHORT and len(data) != 7:
-            raise ValueError(f"Invalid short message length: {len(data)}")
 
     def _broadcast_message(self, data: bytes):
         """
@@ -1248,16 +1054,11 @@ class PicADSBMultiplexer:
             self.logger.error(f"Error removing client: {e}")
 
     def _check_timeouts(self):
-        """Check for timeouts and inactive clients."""
+        """Check for inactive clients and remove them."""
         current_time = time.time()
-
-        if current_time - self._last_data_time > self.NO_DATA_TIMEOUT and not self._no_data_logged:
-            self.logger.warning(f"No data received for {self.NO_DATA_TIMEOUT} seconds")
-            self._check_device_status()
-
         for client in list(self.clients):
             if current_time - self.client_last_active.get(client, 0) > self.NO_DATA_TIMEOUT:
-                self.logger.warning(f"Closing inactive client {client.getpeername()}")
+                self.logger.warning("Closing inactive client")
                 self._remove_client(client)
 
     def validate_message(self, message: bytes) -> bool:
@@ -1500,6 +1301,7 @@ class PicADSBMultiplexer:
 
                     self._update_stats()
                     self._check_timeouts()
+                    self._check_device_status()
 
                 except Exception as e:
                     self.logger.error(f"Error in main loop iteration: {e}")
