@@ -44,6 +44,7 @@ CMD=(python3 -u picadsb-multiplexer.py
     --port "${ADSB_TCP_PORT}"
     --serial "${ADSB_DEVICE}"
     --log-level "${ADSB_LOG_LEVEL}"
+    --max-clients "${ADSB_MAX_CLIENTS:-50}"
 )
 
 # Add optional remote parameters only if both host and port are set

@@ -665,7 +665,7 @@ git commit -m "security: harden Docker, shell scripts, TCP server, CI pipeline
 - Create: `picadsb/__init__.py`
 - Modify: `picadsb-multiplexer.py`
 
-- [ ] **Step 3.1.1: Create `picadsb/__init__.py` with version**
+- [x] **Step 3.1.1: Create `picadsb/__init__.py` with version**
 
 ```python
 """PicADSB Multiplexer — TCP multiplexer for MicroADSB/adsbPIC USB receivers."""
@@ -673,7 +673,7 @@ git commit -m "security: harden Docker, shell scripts, TCP server, CI pipeline
 __version__ = "2.0.0"
 ```
 
-- [ ] **Step 3.1.2: Create `picadsb/config.py`**
+- [x] **Step 3.1.2: Create `picadsb/config.py`**
 
 ```python
 """Configuration management for PicADSB Multiplexer."""
@@ -881,10 +881,10 @@ if __name__ == '__main__':
 
 ### Task 3.2: Phase 3 Review Cycle
 
-- [ ] **Step 3.2.1: Run 3 parallel review agents**
-- [ ] **Step 3.2.2: Fix issues found**
-- [ ] **Step 3.2.3: Update documentation**
-- [ ] **Step 3.2.4: Local commit**
+- [x] **Step 3.2.1: Run 3 parallel review agents**
+- [x] **Step 3.2.2: Fix issues found**
+- [x] **Step 3.2.3: Update documentation**
+- [x] **Step 3.2.4: Local commit**
 
 ```bash
 git add picadsb/ picadsb-multiplexer.py
@@ -905,7 +905,7 @@ git commit -m "refactor: extract Config dataclass, centralize all magic numbers
 **Files:**
 - Modify: `picadsb-multiplexer.py`
 
-- [ ] **Step 4.1.1: Move psutil import to top of file and handle ImportError gracefully**
+- [x] **Step 4.1.1: Move psutil import to top of file and handle ImportError gracefully** (done in Phase 3)
 
 Add at top of file (after line 42):
 ```python
@@ -933,7 +933,7 @@ else:
 **Files:**
 - Modify: `picadsb-multiplexer.py:199-238`
 
-- [ ] **Step 4.2.1: Replace FileHandler with RotatingFileHandler**
+- [x] **Step 4.2.1: Replace FileHandler with RotatingFileHandler** (done in Phase 3)
 
 ```python
 from logging.handlers import RotatingFileHandler
@@ -984,7 +984,7 @@ Changes:
 **Files:**
 - Modify: `Dockerfile`
 
-- [ ] **Step 4.3.1: Add COPY for adsb_message_parser.py**
+- [x] **Step 4.3.1: Add COPY for adsb_message_parser.py** (COPY picadsb/ also added in Phase 3 review fixes)
 
 After line 25 (`COPY picadsb-multiplexer.py .`), add:
 ```dockerfile

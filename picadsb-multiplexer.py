@@ -32,6 +32,7 @@ import socket
 import select
 import queue
 import logging
+from logging.handlers import RotatingFileHandler
 import sys
 import time
 import os
@@ -40,6 +41,15 @@ import pyModeS as pms
 from pyModeS import common
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List, Tuple
+
+try:
+    import psutil
+    HAS_PSUTIL = True
+except ImportError:
+    HAS_PSUTIL = False
+
+from picadsb import __version__
+from picadsb.config import Config
 
 class CRC24:
     """
@@ -184,83 +194,56 @@ class TimestampGenerator:
 class PicADSBMultiplexer:
     """Main multiplexer class that handles device communication and client connections."""
 
-    # Constants
-    SERIAL_BUFFER_SIZE = 131072
-    MAX_MESSAGE_LENGTH = 256
-    NO_DATA_TIMEOUT = 600
-    MAX_RECONNECT_ATTEMPTS = 50
-    RECONNECT_DELAY = 5
-    MAX_RECONNECT_DELAY = 300
-    SYNC_CHECK_INTERVAL = 1
     KEEPALIVE_MARKER = b'\n'
-    HEARTBEAT_INTERVAL = 30
-    MAX_CLIENTS = 50
 
-    def _setup_logging(self, log_level: str):
-        """
-        Configure logging with unified format for both file and console output.
-
-        Args:
-            log_level: Logging level (DEBUG, INFO, WARNING, ERROR)
-        """
-        numeric_level = getattr(logging, log_level.upper(), None)
+    def _setup_logging(self):
+        """Configure logging with rotation."""
+        numeric_level = getattr(logging, self.config.log_level.upper(), None)
         if not isinstance(numeric_level, int):
-            raise ValueError(f'Invalid log level: {log_level}')
+            raise ValueError(f'Invalid log level: {self.config.log_level}')
 
-        # Create logger
         self.logger = logging.getLogger('PicADSB')
         self.logger.setLevel(numeric_level)
-
-        # Remove any existing handlers
         self.logger.handlers = []
 
-        # Create formatter
         formatter = logging.Formatter(
             '%(asctime)s.%(msecs)03d - %(levelname)s - %(message)s',
             '%Y-%m-%d %H:%M:%S'
         )
 
-        # File handler
-        os.makedirs('logs', exist_ok=True)
-        fh = logging.FileHandler(
-            f'logs/picadsb_{datetime.now():%Y%m%d_%H%M%S}.log'
+        # Rotating file handler: 10MB per file, keep 5 backups
+        os.makedirs(self.config.log_dir, exist_ok=True)
+        fh = RotatingFileHandler(
+            os.path.join(self.config.log_dir, 'picadsb.log'),
+            maxBytes=10 * 1024 * 1024,
+            backupCount=5
         )
         fh.setLevel(logging.DEBUG)
         fh.setFormatter(formatter)
 
-        # Console handler
         ch = logging.StreamHandler(sys.stderr)
         ch.setLevel(numeric_level)
         ch.setFormatter(formatter)
 
-        # Add handlers
         self.logger.addHandler(fh)
         self.logger.addHandler(ch)
-
-        # Prevent log propagation to avoid duplicate messages
         self.logger.propagate = False
 
-    def __init__(self, tcp_port: int = 30002, serial_port: str = '/dev/ttyACM0',
-                 log_level: str = 'INFO', skip_init: bool = False,
-                 remote_host: str = None, remote_port: int = None):
-        """Initialize the multiplexer with given parameters."""
-        self.tcp_port = tcp_port
-        self.serial_port = serial_port
-        self.skip_init = skip_init
-        self.remote_host = remote_host
-        self.remote_port = remote_port
-        self.remote_socket = None
-        self._setup_logging(log_level)
+    def __init__(self, config: Config):
+        """Initialize the multiplexer with given configuration."""
+        self.config = config
+
+        self._setup_logging()
         self.timestamp_gen = TimestampGenerator()
 
         # Runtime state
         self.running = True
+        self.remote_socket = None
         self._serial_parse_buffer = bytearray()
         self._last_data_time = time.time()
         self._no_data_logged = False
         self._sync_state = True
         self._last_sync_time = time.time()
-        # Add heartbeat configuration
         self._last_connect_attempt = 0
 
         # Statistics
@@ -284,12 +267,10 @@ class PicADSBMultiplexer:
 
         # Timing controls
         self.last_stats_update = time.time()
-        self.stats_interval = 60
         self.last_remote_check = time.time()
-        self.remote_check_interval = 60  # Check remote connection every 60 seconds
 
         # Message handling
-        self.message_queue = queue.Queue(maxsize=5000)
+        self.message_queue = queue.Queue(maxsize=config.queue_maxsize)
         self.clients: List[socket.socket] = []
         self.client_last_active = {}
 
@@ -318,7 +299,7 @@ class PicADSBMultiplexer:
             data = bytearray()
             data.append(BeastFormat.TYPE_MODEA)  # Type
             data.extend(self.timestamp_gen.get_timestamp())  # 6 bytes timestamp
-            data.append(0xFF)  # Signal level
+            data.append(self.config.signal_level)  # Signal level
             data.extend([0x00, 0x00])  # Null Mode-A data
 
             # Calculate CRC on data portion
@@ -362,21 +343,21 @@ class PicADSBMultiplexer:
         try:
             self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            self.server_socket.bind(('', self.tcp_port))
-            self.server_socket.listen(5)
+            self.server_socket.bind(('', self.config.tcp_port))
+            self.server_socket.listen(self.config.listen_backlog)
             self.server_socket.setblocking(False)
-            self.logger.info(f"TCP server listening on port {self.tcp_port}")
+            self.logger.info(f"TCP server listening on port {self.config.tcp_port}")
         except Exception as e:
             self.logger.error(f"Failed to initialize socket: {e}")
             raise
 
     def _connect_to_remote(self):
         """Connect to remote server as client."""
-        if not self.remote_host or not self.remote_port:
+        if not self.config.remote_host or not self.config.remote_port:
             return
 
         current_time = time.time()
-        if current_time - self._last_connect_attempt < 60:
+        if current_time - self._last_connect_attempt < self.config.remote_reconnect_cooldown:
             return
 
         self._last_connect_attempt = current_time
@@ -390,9 +371,9 @@ class PicADSBMultiplexer:
 
             self.remote_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.remote_socket.settimeout(5)
-            self.remote_socket.connect((self.remote_host, self.remote_port))
+            self.remote_socket.connect((self.config.remote_host, self.config.remote_port))
             self.remote_socket.setblocking(False)
-            self.logger.info(f"Connected to remote server {self.remote_host}:{self.remote_port}")
+            self.logger.info(f"Connected to remote server {self.config.remote_host}:{self.config.remote_port}")
         except Exception as e:
             self.logger.warning(f"Failed to connect to remote server: {e}")
             self.remote_socket = None
@@ -412,13 +393,13 @@ class PicADSBMultiplexer:
             Remote connection is optional and skipped if host/port not specified
         """
         # Skip if remote connection not configured
-        if not all([self.remote_host, self.remote_port]):
+        if not all([self.config.remote_host, self.config.remote_port]):
             return
 
         try:
             current_time = time.time()
 
-            if current_time - self.last_remote_check >= self.remote_check_interval:
+            if current_time - self.last_remote_check >= self.config.remote_check_interval:
                 self.last_remote_check = current_time
 
                 if not self.remote_socket:
@@ -445,19 +426,19 @@ class PicADSBMultiplexer:
         """Initialize serial port with device configuration."""
         try:
             self.ser = serial.Serial(
-                port=self.serial_port,
-                baudrate=115200,
+                port=self.config.serial_port,
+                baudrate=self.config.serial_baudrate,
                 bytesize=serial.EIGHTBITS,
                 parity=serial.PARITY_NONE,
                 stopbits=serial.STOPBITS_ONE,
-                timeout=0.1,
+                timeout=self.config.serial_timeout,
                 xonxoff=False,
                 rtscts=False,
                 dsrdtr=False
             )
 
             if hasattr(self.ser, 'set_buffer_size'):
-                self.ser.set_buffer_size(rx_size=self.SERIAL_BUFFER_SIZE)
+                self.ser.set_buffer_size(rx_size=self.config.serial_buffer_size)
 
             self.ser.reset_input_buffer()
             self.ser.reset_output_buffer()
@@ -470,7 +451,7 @@ class PicADSBMultiplexer:
             self.ser.setRTS(True)
             time.sleep(0.25)
 
-            if not self.skip_init:
+            if not self.config.skip_init:
                 retry_count = 10
                 while retry_count > 0:
                     if self._initialize_device():
@@ -485,7 +466,7 @@ class PicADSBMultiplexer:
                 self.logger.info("Skipping device initialization (--no-init mode)")
                 self._check_device_mode()
 
-            self.logger.info(f"Serial port {self.serial_port} initialized successfully")
+            self.logger.info(f"Serial port {self.config.serial_port} initialized successfully")
 
         except Exception as e:
             self.logger.error(f"Failed to initialize serial port: {e}")
@@ -507,7 +488,7 @@ class PicADSBMultiplexer:
                 else:
                     buffer += byte
 
-                if len(buffer) > self.MAX_MESSAGE_LENGTH:
+                if len(buffer) > self.config.max_message_length:
                     self.logger.warning(f"Response buffer overflow: {buffer!r}")
                     return None
 
@@ -668,8 +649,8 @@ class PicADSBMultiplexer:
                         self._serial_parse_buffer = bytearray()
                     else:
                         self._serial_parse_buffer.append(byte)
-                        if len(self._serial_parse_buffer) > self.MAX_MESSAGE_LENGTH:
-                            self._serial_parse_buffer = self._serial_parse_buffer[-self.MAX_MESSAGE_LENGTH:]
+                        if len(self._serial_parse_buffer) > self.config.max_message_length:
+                            self._serial_parse_buffer = self._serial_parse_buffer[-self.config.max_message_length:]
                             self.stats['buffer_truncated'] += 1
 
         except Exception as e:
@@ -680,9 +661,9 @@ class PicADSBMultiplexer:
         """Check device status if no data received for a while."""
         current_time = time.time()
 
-        if current_time - self._last_data_time > self.NO_DATA_TIMEOUT:
+        if current_time - self._last_data_time > self.config.no_data_timeout:
             if not self._no_data_logged:
-                self.logger.warning(f"No data received for {self.NO_DATA_TIMEOUT} seconds, checking device...")
+                self.logger.warning(f"No data received for {self.config.no_data_timeout} seconds, checking device...")
                 self._no_data_logged = True
 
             self.ser.write(self.format_command(b'\x43\x02'))
@@ -701,14 +682,14 @@ class PicADSBMultiplexer:
     def _reconnect(self) -> bool:
         """Attempt to reconnect to the device with exponential backoff."""
         self.logger.info("Attempting to reconnect...")
-        delay = self.RECONNECT_DELAY
+        delay = self.config.reconnect_delay
 
-        for attempt in range(self.MAX_RECONNECT_ATTEMPTS):
+        for attempt in range(self.config.max_reconnect_attempts):
             if not self.running:
                 return False
 
             try:
-                self.logger.info(f"Reconnection attempt {attempt + 1}/{self.MAX_RECONNECT_ATTEMPTS} (delay: {delay}s)")
+                self.logger.info(f"Reconnection attempt {attempt + 1}/{self.config.max_reconnect_attempts} (delay: {delay}s)")
 
                 if hasattr(self, 'ser') and self.ser.is_open:
                     self.ser.close()
@@ -736,9 +717,9 @@ class PicADSBMultiplexer:
                 self.logger.error(f"Reconnection attempt {attempt + 1} failed: {e}")
 
             # Exponential backoff with cap
-            delay = min(delay * 2, self.MAX_RECONNECT_DELAY)
+            delay = min(delay * 2, self.config.max_reconnect_delay)
 
-        self.logger.error(f"Failed to reconnect after {self.MAX_RECONNECT_ATTEMPTS} attempts")
+        self.logger.error(f"Failed to reconnect after {self.config.max_reconnect_attempts} attempts")
         return False
 
     def _check_sync_state(self):
@@ -774,7 +755,7 @@ class PicADSBMultiplexer:
         """
         try:
             current_time = time.time()
-            if current_time - self.last_stats_update >= self.stats_interval:
+            if current_time - self.last_stats_update >= self.config.stats_interval:
                 # Calculate message rate
                 messages_per_minute = (self.stats['messages_processed'] -
                                      self.stats['last_minute_count'])
@@ -794,11 +775,10 @@ class PicADSBMultiplexer:
                 queue_utilization = (queue_size / queue_capacity) * 100 if queue_capacity > 0 else 0
 
                 # Get process memory usage
-                try:
-                    import psutil
+                if HAS_PSUTIL:
                     process = psutil.Process()
                     memory_mb = process.memory_info().rss / 1024 / 1024
-                except ImportError:
+                else:
                     memory_mb = 0
 
                 # Format uptime
@@ -836,8 +816,8 @@ class PicADSBMultiplexer:
         try:
             client_socket, address = self.server_socket.accept()
 
-            if len(self.clients) >= self.MAX_CLIENTS:
-                self.logger.warning(f"Max clients ({self.MAX_CLIENTS}) reached, rejecting {address}")
+            if len(self.clients) >= self.config.max_clients:
+                self.logger.warning(f"Max clients ({self.config.max_clients}) reached, rejecting {address}")
                 client_socket.close()
                 return
 
@@ -845,7 +825,7 @@ class PicADSBMultiplexer:
             self.clients.append(client_socket)
             self.stats['clients_total'] += 1
             self.stats['clients_current'] = len(self.clients)
-            self.logger.info(f"New client connected from {address} ({len(self.clients)}/{self.MAX_CLIENTS})")
+            self.logger.info(f"New client connected from {address} ({len(self.clients)}/{self.config.max_clients})")
         except Exception as e:
             self.logger.error(f"Error accepting client: {e}")
 
@@ -893,7 +873,7 @@ class PicADSBMultiplexer:
     def _send_version_to_client(self, client: socket.socket):
         """Send version information to client."""
         try:
-            version_info = f"PicADSB Multiplexer v1.0\n"
+            version_info = f"PicADSB Multiplexer v{__version__}\n"
             client.send(version_info.encode())
         except Exception as e:
             self.logger.error(f"Error sending version to client: {e}")
@@ -950,7 +930,7 @@ class PicADSBMultiplexer:
             data_portion = bytearray()
             data_portion.append(msg_type)  # Type
             data_portion.extend(timestamp)  # 6 byte timestamp
-            data_portion.append(0xFF)  # Signal level
+            data_portion.append(self.config.signal_level)  # Signal level
             data_portion.extend(data)  # ADS-B data
 
             # Calculate CRC on data portion
@@ -1063,7 +1043,7 @@ class PicADSBMultiplexer:
         """Check for inactive clients and remove them."""
         current_time = time.time()
         for client in list(self.clients):
-            if current_time - self.client_last_active.get(client, 0) > self.NO_DATA_TIMEOUT:
+            if current_time - self.client_last_active.get(client, 0) > self.config.no_data_timeout:
                 self.logger.warning("Closing inactive client")
                 self._remove_client(client)
 
@@ -1203,13 +1183,13 @@ class PicADSBMultiplexer:
             # Check last data received time (4 hours timeout)
             current_time = time.time()
             data_gap = current_time - self._last_data_time
-            if data_gap > 14400:  # 4 hours in seconds
+            if data_gap > self.config.health_no_data_timeout:
                 self.logger.error(f"Health check failed: No data received for {data_gap/3600:.1f} hours")
                 return False
 
             # Check if system is processing messages at all
             uptime = current_time - self.stats['start_time']
-            if self.stats['messages_processed'] == 0 and uptime > 300:
+            if self.stats['messages_processed'] == 0 and uptime > self.config.health_startup_grace:
                 # Only fail if no messages after 5 minutes of startup
                 self.logger.error(f"Health check failed: No messages processed in {uptime:.1f} seconds since startup")
                 return False
@@ -1242,9 +1222,9 @@ class PicADSBMultiplexer:
         last_heartbeat = time.time()
 
         # Initialize remote connection if configured
-        if all([self.remote_host, self.remote_port]):
+        if all([self.config.remote_host, self.config.remote_port]):
             self._connect_to_remote()
-            self.logger.info(f"Remote connection enabled: {self.remote_host}:{self.remote_port}")
+            self.logger.info(f"Remote connection enabled: {self.config.remote_host}:{self.config.remote_port}")
         else:
             self.logger.info("Remote connection disabled")
 
@@ -1254,14 +1234,14 @@ class PicADSBMultiplexer:
                     current_time = time.time()
 
                     # Send heartbeat if needed
-                    if current_time - last_heartbeat >= self.HEARTBEAT_INTERVAL:
+                    if current_time - last_heartbeat >= self.config.heartbeat_interval:
                         self._send_heartbeat()
                         last_heartbeat = current_time
 
                     self._process_serial_data()
 
                     # Check remote connection only if configured
-                    if all([self.remote_host, self.remote_port]):
+                    if all([self.config.remote_host, self.config.remote_port]):
                         self._check_remote_connection()
 
                     # Prepare sockets for select()
@@ -1301,7 +1281,7 @@ class PicADSBMultiplexer:
 
                     # Periodic checks
                     current_time = time.time()
-                    if current_time - last_sync_check >= self.SYNC_CHECK_INTERVAL:
+                    if current_time - last_sync_check >= self.config.sync_check_interval:
                         self._check_sync_state()
                         last_sync_check = current_time
 
@@ -1356,29 +1336,35 @@ class PicADSBMultiplexer:
 if __name__ == '__main__':
     import argparse
 
+    _defaults = Config.__dataclass_fields__
+
     parser = argparse.ArgumentParser(
-        description='PicADSB Multiplexer',
+        description='PicADSB Multiplexer — TCP multiplexer for MicroADSB/adsbPIC USB receivers',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
 
-    # Required arguments
+    parser.add_argument(
+        '--version',
+        action='version',
+        version=f'PicADSB Multiplexer v{__version__}'
+    )
+
     parser.add_argument(
         '--port',
         type=int,
-        default=30002,
+        default=_defaults['tcp_port'].default,
         help='Local TCP port to listen on'
     )
 
     parser.add_argument(
         '--serial',
-        default='/dev/ttyACM0',
+        default=_defaults['serial_port'].default,
         help='Serial port device path'
     )
 
-    # Optional arguments
     parser.add_argument(
         '--log-level',
-        default='INFO',
+        default=_defaults['log_level'].default,
         choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
         help='Logging verbosity level'
     )
@@ -1387,6 +1373,13 @@ if __name__ == '__main__':
         '--no-init',
         action='store_true',
         help='Skip device initialization sequence'
+    )
+
+    parser.add_argument(
+        '--max-clients',
+        type=int,
+        default=_defaults['max_clients'].default,
+        help='Maximum number of simultaneous TCP clients'
     )
 
     # Remote connection group
@@ -1406,22 +1399,20 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
-    # Validate remote connection arguments
-    if bool(args.remote_host) != bool(args.remote_port):
-        parser.error("Both --remote-host and --remote-port must be specified together")
-
     try:
-        multiplexer = PicADSBMultiplexer(
+        config = Config(
             tcp_port=args.port,
             serial_port=args.serial,
             log_level=args.log_level,
             skip_init=args.no_init,
+            max_clients=args.max_clients,
             remote_host=args.remote_host,
             remote_port=args.remote_port
         )
+        multiplexer = PicADSBMultiplexer(config=config)
         multiplexer.run()
-    except KeyboardInterrupt:
-        pass
+    except ValueError as e:
+        parser.error(str(e))
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
