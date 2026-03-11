@@ -1,9 +1,10 @@
 #!/bin/bash
+set -euo pipefail
 
 # Health check script for ADS-B multiplexer
 
 # Check if main process is running
-if ! ps aux | grep "python3 -u picadsb-multiplexer.py" | grep -v grep > /dev/null; then
+if ! pgrep -f "python3 -u picadsb-multiplexer.py" > /dev/null; then
     echo "Process not running"
     exit 1
 fi

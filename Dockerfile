@@ -1,9 +1,8 @@
 FROM --platform=$TARGETPLATFORM python:3.11-slim
 
 # Install required system packages
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     udev \
-    logrotate \
     curl \
     procps \
     iproute2 \
@@ -11,9 +10,6 @@ RUN apt-get update && apt-get install -y \
 
 # Create app directory
 WORKDIR /app
-
-# Configure logrotate
-RUN echo '/app/logs/*.log { daily rotate 7 compress delaycompress missingok notifempty create 644 root root size 10M }' > /etc/logrotate.d/application
 
 # Copy requirements
 COPY requirements.txt .
@@ -23,14 +19,24 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application
 COPY picadsb-multiplexer.py .
+COPY adsb_message_parser.py .
 COPY entrypoint.sh .
 COPY health_check.sh .
 
-# Create directory for logs
+# Create directory for logs and set permissions
 RUN mkdir -p /app/logs
 
 # Make scripts executable
 RUN chmod +x /app/entrypoint.sh /app/health_check.sh
+
+# Precompile Python files for read_only filesystem
+RUN python -m compileall /app
+
+# Create non-root user
+RUN groupadd -r adsb && useradd -r -g adsb -G dialout -d /app -s /sbin/nologin adsb && \
+    chown -R adsb:adsb /app
+
+USER adsb
 
 # Set environment variables with defaults
 ENV ADSB_TCP_PORT=31002
@@ -43,9 +49,10 @@ ENV ADSB_REMOTE_PORT=
 # Log management settings
 ENV MAX_LOG_SIZE=100M
 ENV LOG_RETENTION_DAYS=7
+ENV PYTHONDONTWRITEBYTECODE=1
 
 # Expose the default port
-EXPOSE ${ADSB_TCP_PORT}
+EXPOSE 31002
 
 # Add healthcheck with parameters suitable for ADS-B operation
 HEALTHCHECK --interval=300s --timeout=30s --start-period=60s --retries=3 \
