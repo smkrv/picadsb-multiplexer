@@ -13,6 +13,8 @@ services:
       - ADSB_TCP_PORT=31002
       - ADSB_DEVICE=/dev/ttyACM0
       - ADSB_LOG_LEVEL=INFO
+      - ADSB_MAX_CLIENTS=50
+      - ADSB_NO_INIT=false
       - ADSB_REMOTE_HOST=
       - ADSB_REMOTE_PORT=
     volumes:
@@ -24,6 +26,11 @@ services:
       - /tmp
     cap_drop:
       - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
     mem_limit: 256m
     memswap_limit: 256m
     pids_limit: 50

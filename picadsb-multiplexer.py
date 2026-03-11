@@ -203,7 +203,7 @@ class PicADSBMultiplexer:
             raise ValueError(f'Invalid log level: {self.config.log_level}')
 
         self.logger = logging.getLogger('PicADSB')
-        self.logger.setLevel(numeric_level)
+        self.logger.setLevel(logging.DEBUG)
         self.logger.handlers = []
 
         formatter = logging.Formatter(

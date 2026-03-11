@@ -5,6 +5,7 @@ set -euo pipefail
 ADSB_TCP_PORT="${ADSB_TCP_PORT:-31002}"
 ADSB_DEVICE="${ADSB_DEVICE:-/dev/ttyACM0}"
 ADSB_LOG_LEVEL="${ADSB_LOG_LEVEL:-INFO}"
+ADSB_MAX_CLIENTS="${ADSB_MAX_CLIENTS:-50}"
 MAX_LOG_SIZE="${MAX_LOG_SIZE:-100M}"
 LOG_RETENTION_DAYS="${LOG_RETENTION_DAYS:-7}"
 
@@ -28,6 +29,12 @@ if [ ! -e "${ADSB_DEVICE}" ]; then
     exit 1
 fi
 
+# Verify logs directory is writable (bind-mount may be owned by root)
+if [ -d "/app/logs" ] && [ ! -w "/app/logs" ]; then
+    echo "Error: /app/logs is not writable by user $(id -un). Fix host permissions: sudo chown $(id -u):$(id -g) ./logs"
+    exit 1
+fi
+
 # Check if logs directory exists and manage size
 if [ -d "/app/logs" ]; then
     current_size=$(du -sm /app/logs | cut -f1)
@@ -35,7 +42,7 @@ if [ -d "/app/logs" ]; then
 
     if [ "$current_size" -gt "$max_size" ]; then
         echo "Log directory size ($current_size MB) exceeds limit ($max_size MB). Cleaning old logs..."
-        find /app/logs -name "*.log" -type f -mtime +"${LOG_RETENTION_DAYS}" -delete
+        find /app/logs \( -name "*.log" -o -name "*.log.[0-9]*" \) -type f -mtime +"${LOG_RETENTION_DAYS}" -delete
     fi
 fi
 
@@ -44,7 +51,7 @@ CMD=(python3 -u picadsb-multiplexer.py
     --port "${ADSB_TCP_PORT}"
     --serial "${ADSB_DEVICE}"
     --log-level "${ADSB_LOG_LEVEL}"
-    --max-clients "${ADSB_MAX_CLIENTS:-50}"
+    --max-clients "${ADSB_MAX_CLIENTS}"
 )
 
 # Add optional remote parameters only if both host and port are set
