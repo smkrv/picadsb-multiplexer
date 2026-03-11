@@ -6,7 +6,7 @@ RUN apt-get update && apt-get install -y \
     logrotate \
     curl \
     procps \
-    net-tools \
+    iproute2 \
     && rm -rf /var/lib/apt/lists/*
 
 # Create app directory
