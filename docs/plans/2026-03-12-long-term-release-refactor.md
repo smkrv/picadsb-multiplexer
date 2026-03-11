@@ -1016,11 +1016,23 @@ git commit -m "fix: proper psutil import, log rotation, Docker includes all file
 
 ### Task 5.1: Final 3-agent comprehensive review
 
-- [ ] **Step 5.1.1: Run Code Review agent** — full scan of all files, focusing on bugs, logic errors, HA conventions
-- [ ] **Step 5.1.2: Run Security Review agent** — full security audit including all changes from phases 1-4
-- [ ] **Step 5.1.3: Run Architectural Review agent** — coupling, SoC, scalability, completeness
-- [ ] **Step 5.1.4: Fix any remaining issues found**
-- [ ] **Step 5.1.5: Re-review if any critical issues**
+- [x] **Step 5.1.1: Run Code Review agent** — PASS, 0 CRITICAL/HIGH, 2 MEDIUM fixed
+- [x] **Step 5.1.2: Run Security Review agent** — PASS, 0 CRITICAL/HIGH, 2 MEDIUM (acceptable)
+- [x] **Step 5.1.3: Run Architectural Review agent** — READY WITH NOTES
+- [x] **Step 5.1.4: Fix remaining issues found**
+  - Fixed: `_escape_beast_data` returns None on error instead of corrupt data
+  - Fixed: Remote keepalive sends Beast heartbeat instead of raw `\n`
+  - Fixed: TimestampGenerator dead offset logic removed
+  - Fixed: 8 bare `except:` → `except Exception:`
+  - Fixed: `send()` → `sendall()` everywhere
+  - Fixed: self_test() rewritten to test Beast framing
+  - Fixed: Invalid test vector `*02E197;` replaced with proper 7-byte/2-byte vectors
+  - Fixed: `all([host, port])` → explicit `is not None` checks
+  - Fixed: `_last_bytes_processed` initialized in `__init__`
+  - Fixed: `adsb_message_parser.py` removed from Dockerfile
+  - Fixed: entrypoint.sh MAX_LOG_SIZE parsing with validation
+  - Fixed: `__init__` resource leak on self-test failure
+- [x] **Step 5.1.5: Re-review** — 2nd round: 0 CRITICAL, 0 HIGH, all MEDIUM fixed
 
 ---
 
@@ -1034,7 +1046,7 @@ git commit -m "fix: proper psutil import, log rotation, Docker includes all file
 - Create: `tests/test_parser.py`
 - Create: `pytest.ini` or `pyproject.toml` (test config)
 
-- [ ] **Step 5.2.1: Create pytest configuration**
+- [x] **Step 5.2.1: Create pytest configuration**
 
 Create `pyproject.toml`:
 ```toml
@@ -1051,11 +1063,11 @@ python_functions = ["test_*"]
 addopts = "-v --tb=short"
 ```
 
-- [ ] **Step 5.2.2: Create `tests/__init__.py`**
+- [x] **Step 5.2.2: Create `tests/__init__.py`**
 
 Empty file.
 
-- [ ] **Step 5.2.3: Create `tests/test_crc24.py`**
+- [x] **Step 5.2.3: ~~Create `tests/test_crc24.py`~~ (SKIPPED — CRC24 class removed; CRC tested via pyModeS in self_test)**
 
 ```python
 """Tests for CRC24 implementation."""
@@ -1121,7 +1133,7 @@ class TestCRC24:
         assert CRC24.verify(b'\x00' * 10) is False
 ```
 
-- [ ] **Step 5.2.4: Create `tests/test_beast.py`**
+- [x] **Step 5.2.4: Create `tests/test_beast.py`** + `tests/test_escape.py`
 
 ```python
 """Tests for Beast format encoding."""
@@ -1182,7 +1194,7 @@ class TestTimestampGenerator:
         assert int.from_bytes(ts, 'big') > 0
 ```
 
-- [ ] **Step 5.2.5: Create `tests/test_config.py`**
+- [x] **Step 5.2.5: Create `tests/test_config.py`**
 
 ```python
 """Tests for Config dataclass."""
@@ -1233,7 +1245,7 @@ class TestConfig:
         assert c.tcp_port == 30002  # default
 ```
 
-- [ ] **Step 5.2.6: Create `tests/test_parser.py`**
+- [x] **Step 5.2.6: Create `tests/test_validate.py`** (renamed from test_parser.py)
 
 ```python
 """Tests for message validation."""
@@ -1304,7 +1316,7 @@ class TestValidateMessage:
         assert validator.validate_message(msg) is False
 ```
 
-- [ ] **Step 5.2.7: Run tests locally**
+- [x] **Step 5.2.7: Run tests locally** — 63 passed in 0.04s
 
 ```bash
 cd /Users/makarov/GitHub/picadsb-multiplexer
@@ -1323,7 +1335,7 @@ pytest tests/ -v
 - Modify: `.github/workflows/docker-publish.yml`
 - Create: `.github/workflows/test.yml`
 
-- [ ] **Step 5.3.1: Create test workflow**
+- [x] **Step 5.3.1: Create test workflow** (`.github/workflows/test.yml` — Python 3.11/3.12/3.13)
 
 ```yaml
 name: Tests
@@ -1361,7 +1373,7 @@ jobs:
 
 Note: SHA for setup-python must be verified at implementation time.
 
-- [ ] **Step 5.3.2: Add test requirement to Docker build workflow**
+- [x] **Step 5.3.2: Add test requirement to Docker build workflow** (`needs: test` added to docker-publish.yml)
 
 In `docker-publish.yml`, add `needs: test` if test job is in a separate workflow, or add a test step before the build step. Simplest: make Docker workflow depend on test workflow passing by adding test as a job:
 
@@ -1391,7 +1403,7 @@ Add before `build` job:
 **Files:**
 - Modify: `.gitignore`
 
-- [ ] **Step 5.4.1: Add test and venv patterns**
+- [x] **Step 5.4.1: Add test and venv patterns** (already in .gitignore)
 
 Append to `.gitignore`:
 ```
@@ -1413,8 +1425,8 @@ __pycache__/
 
 ### Task 5.5: Final commit and documentation
 
-- [ ] **Step 5.5.1: Update memory with final project state**
-- [ ] **Step 5.5.2: Local commit**
+- [x] **Step 5.5.1: Update memory with final project state**
+- [ ] **Step 5.5.2: Local commit** — awaiting user confirmation
 
 ```bash
 git add tests/ pyproject.toml .github/workflows/ .gitignore
@@ -1426,9 +1438,9 @@ git commit -m "test: add unit tests and CI/CD pipeline
 - Update .gitignore for test artifacts and venv"
 ```
 
-- [ ] **Step 5.5.3: Final review — 3 agents**
-- [ ] **Step 5.5.4: Fix any remaining issues, commit if needed**
-- [ ] **Step 5.5.5: Report ready for push**
+- [x] **Step 5.5.3: Final review — 3 agents** — Code: PASS, Security: PASS, Architecture: READY WITH NOTES
+- [x] **Step 5.5.4: Fix any remaining issues** — all MEDIUM issues from 2nd review fixed
+- [ ] **Step 5.5.5: Report ready for push** — awaiting commit
 
 ---
 

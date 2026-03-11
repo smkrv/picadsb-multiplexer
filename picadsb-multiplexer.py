@@ -38,9 +38,7 @@ import time
 import os
 import signal
 import pyModeS as pms
-from pyModeS import common
-from datetime import datetime, timezone
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Optional, List
 
 try:
     import psutil
@@ -51,79 +49,6 @@ except ImportError:
 from picadsb import __version__
 from picadsb.config import Config
 
-class CRC24:
-    """
-    CRC-24 implementation for Beast format messages.
-    Single byte CRC for Beast protocol.
-    """
-
-    @staticmethod
-    def compute(data: bytes, debug: bool = False) -> int:
-        """
-        Compute single-byte CRC for Beast format.
-
-        Args:
-            data: Raw message bytes including type and timestamp
-            debug: Enable debug logging
-
-        Returns:
-            Single byte CRC value as integer
-        """
-        try:
-            if len(data) < 3:
-                raise ValueError("Data too short for CRC computation")
-
-            hex_data = data.hex().upper()
-            if debug:
-                logging.debug(f"Computing CRC for hex data: {hex_data}")
-
-            # Get full CRC-24 value
-            full_crc = pms.common.crc(hex_data)
-
-            # Take only least significant byte
-            crc_byte = full_crc & 0xFF
-
-            if debug:
-                logging.debug(f"Full CRC: {full_crc:06X}, using byte: {crc_byte:02X}")
-
-            return crc_byte
-
-        except Exception as e:
-            logging.error(f"CRC computation error: {e}")
-            return 0
-
-    @staticmethod
-    def verify(message: bytes, debug: bool = False) -> bool:
-        """
-        Verify single-byte CRC of Beast message.
-
-        Args:
-            message: Complete message including type, timestamp and CRC
-            debug: Enable debug logging
-
-        Returns:
-            True if CRC is valid
-        """
-        try:
-            if len(message) < 11:  # Minimum length for Beast message
-                return False
-
-            # Split message into data and CRC
-            data = message[:-1]
-            received_crc = message[-1]
-
-            # Calculate CRC
-            calculated_crc = CRC24.compute(data)
-
-            if debug:
-                logging.debug(f"CRC verification: calculated=0x{calculated_crc:02X}, received=0x{received_crc:02X}")
-
-            return calculated_crc == received_crc
-
-        except Exception as e:
-            logging.error(f"CRC verification error: {e}")
-            return False
-
 class BeastFormat:
     """
     Beast Binary Format v2.0 implementation.
@@ -131,8 +56,7 @@ class BeastFormat:
     Supports:
     - Mode-S short/long messages
     - Mode-A/C with MLAT timestamps
-    - Escape sequence handling
-    - CRC validation
+    - Escape sequence handling (0x1A doubling)
     """
     ESCAPE = 0x1A
     TYPE_MODEA = 0x31       # Mode-A/C with MLAT timestamp
@@ -153,41 +77,29 @@ class TimestampGenerator:
     def __init__(self):
         """Initialize timestamp generator with system time reference."""
         self.last_micros = 0
-        self.offset = 0
         self.logger = logging.getLogger('PicADSB.Timestamp')
-        self.last_system_time = time.time()
         self.last_timestamp = 0
-        self.min_increment = 1
 
     def get_timestamp(self) -> bytes:
         try:
             current_time = time.time()
-            current_micros = int((current_time % 86400) * 1e6)  # Время с начала дня в микросекундах
+            current_micros = int((current_time % 86400) * 1e6)  # Microseconds since start of day
 
-            if self.last_micros == 0:
-                self.last_micros = current_micros
-                self.last_system_time = current_time
-                return current_micros.to_bytes(6, 'big')
-
-            # Проверка перехода через полночь
-            if current_micros < self.last_micros:
-                self.offset += BeastFormat.MAX_TIMESTAMP + 1
-
-            # Обеспечение монотонности
+            # Ensure monotonicity (handles midnight rollover naturally)
             if current_micros <= self.last_micros:
-                current_micros = self.last_micros + self.min_increment
+                current_micros = self.last_micros + 1
 
-            adjusted_micros = (current_micros + self.offset) % (BeastFormat.MAX_TIMESTAMP + 1)
+            # Clamp to 6-byte range
+            current_micros = current_micros % (BeastFormat.MAX_TIMESTAMP + 1)
 
             self.last_micros = current_micros
-            self.last_system_time = current_time
-            self.last_timestamp = adjusted_micros
+            self.last_timestamp = current_micros
 
-            return adjusted_micros.to_bytes(6, 'big')
+            return current_micros.to_bytes(6, 'big')
 
         except Exception as e:
             self.logger.error(f"Timestamp generation error: {e}")
-            fallback = (self.last_timestamp + self.min_increment) % BeastFormat.MAX_TIMESTAMP
+            fallback = (self.last_timestamp + 1) % (BeastFormat.MAX_TIMESTAMP + 1)
             self.last_timestamp = fallback
             return fallback.to_bytes(6, 'big')
 
@@ -242,8 +154,6 @@ class PicADSBMultiplexer:
         self._serial_parse_buffer = bytearray()
         self._last_data_time = time.time()
         self._no_data_logged = False
-        self._sync_state = True
-        self._last_sync_time = time.time()
         self._last_connect_attempt = 0
 
         # Statistics
@@ -268,6 +178,7 @@ class PicADSBMultiplexer:
         # Timing controls
         self.last_stats_update = time.time()
         self.last_remote_check = time.time()
+        self._last_bytes_processed = 0
 
         # Message handling
         self.message_queue = queue.Queue(maxsize=config.queue_maxsize)
@@ -284,66 +195,69 @@ class PicADSBMultiplexer:
 
         # Perform self-test
         if not self.self_test():
+            self.cleanup()
             raise RuntimeError("Self-test failed, aborting startup")
 
-    def _send_heartbeat(self):
-        """
-        Send Beast format heartbeat message (Mode-A null message).
-        Includes proper framing with escape sequences.
-        """
+    def _build_heartbeat_message(self) -> Optional[bytes]:
+        """Build a Beast heartbeat (Mode-A null message) without sending it."""
         try:
-            # Create message with initial escape byte
-            message = bytearray([BeastFormat.ESCAPE])  # Start marker
-
-            # Build data portion
+            message = bytearray([BeastFormat.ESCAPE])
             data = bytearray()
-            data.append(BeastFormat.TYPE_MODEA)  # Type
-            data.extend(self.timestamp_gen.get_timestamp())  # 6 bytes timestamp
-            data.append(self.config.signal_level)  # Signal level
-            data.extend([0x00, 0x00])  # Null Mode-A data
+            data.append(BeastFormat.TYPE_MODEA)
+            data.extend(self.timestamp_gen.get_timestamp())
+            data.append(self.config.signal_level)
+            data.extend([0x00, 0x00])
 
-            # Calculate CRC on data portion
-            crc = CRC24.compute(bytes(data))
-            data.append(crc)
-
-            # Add escaped data to message
-            message.extend(self._escape_beast_data(data))
-
-            final_msg = bytes(message)
-            self.logger.debug(f"Heartbeat message: {final_msg.hex().upper()}")
-
-            # Send to clients
-            disconnected = []
-            for client in self.clients:
-                try:
-                    sent = client.send(final_msg)
-                    if sent == 0:
-                        raise BrokenPipeError("Zero bytes sent")
-                except Exception as e:
-                    self.logger.warning(f"Failed to send heartbeat: {e}")
-                    disconnected.append(client)
-
-            # Clean up disconnected clients
-            for client in disconnected:
-                self._remove_client(client)
-
-            # Send to remote
-            if self.remote_socket:
-                try:
-                    self.remote_socket.send(final_msg)
-                except Exception as e:
-                    self.logger.error(f"Remote heartbeat failed: {e}")
-                    self.remote_socket = None
-
+            escaped = self._escape_beast_data(data)
+            if escaped is None:
+                return None
+            message.extend(escaped)
+            return bytes(message)
         except Exception as e:
             self.logger.error(f"Heartbeat generation failed: {e}")
+            return None
+
+    def _send_heartbeat(self):
+        """Send Beast heartbeat to all clients and remote."""
+        final_msg = self._build_heartbeat_message()
+        if final_msg is None:
+            return
+
+        self.logger.debug(f"Heartbeat message: {final_msg.hex().upper()}")
+
+        disconnected = []
+        for client in self.clients:
+            try:
+                client.sendall(final_msg)
+            except Exception as e:
+                self.logger.warning(f"Failed to send heartbeat: {e}")
+                disconnected.append(client)
+
+        for client in disconnected:
+            self._remove_client(client)
+
+        if self.remote_socket:
+            try:
+                self.remote_socket.sendall(final_msg)
+            except Exception as e:
+                self.logger.error(f"Remote heartbeat failed: {e}")
+                self._close_remote_socket()
+
+    def _close_remote_socket(self):
+        """Close remote socket and set to None."""
+        if self.remote_socket:
+            try:
+                self.remote_socket.close()
+            except Exception:
+                pass
+            self.remote_socket = None
 
     def _init_socket(self):
         """Initialize TCP server socket."""
         try:
             self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            self.server_socket.bind(('', self.config.tcp_port))
+            self.server_socket.bind((self.config.bind_address, self.config.tcp_port))
             self.server_socket.listen(self.config.listen_backlog)
             self.server_socket.setblocking(False)
             self.logger.info(f"TCP server listening on port {self.config.tcp_port}")
@@ -366,7 +280,7 @@ class PicADSBMultiplexer:
             if self.remote_socket:
                 try:
                     self.remote_socket.close()
-                except:
+                except Exception:
                     pass
 
             self.remote_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -393,7 +307,7 @@ class PicADSBMultiplexer:
             Remote connection is optional and skipped if host/port not specified
         """
         # Skip if remote connection not configured
-        if not all([self.config.remote_host, self.config.remote_port]):
+        if self.config.remote_host is None or self.config.remote_port is None:
             return
 
         try:
@@ -406,21 +320,17 @@ class PicADSBMultiplexer:
                     self._connect_to_remote()
                 else:
                     try:
-                        # Test connection with keepalive
-                        self.remote_socket.send(b'\n')
+                        # Send targeted heartbeat only to remote as keepalive
+                        heartbeat = self._build_heartbeat_message()
+                        if heartbeat:
+                            self.remote_socket.sendall(heartbeat)
                     except Exception as e:
                         self.logger.warning(f"Remote connection test failed: {e}")
-                        self.remote_socket = None
-                        # Connection lost, will reconnect on next check
+                        self._close_remote_socket()
 
         except Exception as e:
             self.logger.error(f"Error checking remote connection: {e}")
-            if self.remote_socket:
-                try:
-                    self.remote_socket.close()
-                except:
-                    pass
-                self.remote_socket = None
+            self._close_remote_socket()
 
     def _init_serial(self):
         """Initialize serial port with device configuration."""
@@ -520,8 +430,6 @@ class PicADSBMultiplexer:
             if not self._initialize_device():
                 raise Exception("Device reset failed")
 
-            self._sync_state = True
-            self._last_sync_time = time.time()
             self.logger.info("Device reset completed successfully")
 
         except Exception as e:
@@ -637,11 +545,15 @@ class PicADSBMultiplexer:
                             except queue.Full:
                                 self.stats['messages_dropped'] += 1
                         else:
-                            if len(self._serial_parse_buffer) > 3:
+                            if final_msg.startswith(b'*') and len(self._serial_parse_buffer) > 3:
+                                content = final_msg[1:-1]
                                 try:
+                                    bytes.fromhex(content.decode())
                                     self.message_queue.put_nowait(final_msg + b'\n')
                                     self.stats['recovered_messages'] += 1
                                     self.logger.debug(f"Recovered partial message: {final_msg!r}")
+                                except (ValueError, UnicodeDecodeError):
+                                    self.stats['invalid_messages'] += 1
                                 except queue.Full:
                                     self.stats['messages_dropped'] += 1
                             else:
@@ -650,7 +562,7 @@ class PicADSBMultiplexer:
                     else:
                         self._serial_parse_buffer.append(byte)
                         if len(self._serial_parse_buffer) > self.config.max_message_length:
-                            self._serial_parse_buffer = self._serial_parse_buffer[-self.config.max_message_length:]
+                            self._serial_parse_buffer = bytearray()
                             self.stats['buffer_truncated'] += 1
 
         except Exception as e:
@@ -708,7 +620,6 @@ class PicADSBMultiplexer:
                         self.stats['reconnects'] += 1
                         self._last_data_time = time.time()
                         self._no_data_logged = False
-                        self._sync_state = True
                         self._serial_parse_buffer = bytearray()
                         return True
                     time.sleep(0.1)
@@ -721,10 +632,6 @@ class PicADSBMultiplexer:
 
         self.logger.error(f"Failed to reconnect after {self.config.max_reconnect_attempts} attempts")
         return False
-
-    def _check_sync_state(self):
-        """Check and maintain synchronization state."""
-        self._last_sync_time = time.time()
 
     def shutdown(self):
         """Gracefully shutdown the device."""
@@ -863,7 +770,7 @@ class PicADSBMultiplexer:
                     self._send_stats_to_client(client)
                 else:
                     self.logger.debug(f"Received unknown command from client: {cmd}")
-            except:
+            except Exception:
                 self.logger.debug(f"Received data from client: {data!r}")
 
         except Exception as e:
@@ -874,7 +781,7 @@ class PicADSBMultiplexer:
         """Send version information to client."""
         try:
             version_info = f"PicADSB Multiplexer v{__version__}\n"
-            client.send(version_info.encode())
+            client.sendall(version_info.encode())
         except Exception as e:
             self.logger.error(f"Error sending version to client: {e}")
             self._remove_client(client)
@@ -888,12 +795,12 @@ class PicADSBMultiplexer:
                 f"Errors: {self.stats['errors']}\n"
                 f"Connected clients: {self.stats['clients_current']}\n"
             )
-            client.send(stats.encode())
+            client.sendall(stats.encode())
         except Exception as e:
             self.logger.error(f"Error sending stats to client: {e}")
             self._remove_client(client)
 
-    def _escape_beast_data(self, data: bytes) -> bytes:
+    def _escape_beast_data(self, data: bytes) -> Optional[bytes]:
         """Apply Beast format escape sequences (doubles 0x1A bytes in data)."""
         try:
             escaped = bytearray()
@@ -905,7 +812,7 @@ class PicADSBMultiplexer:
             return bytes(escaped)
         except Exception as e:
             self.logger.error(f"Beast data escape error: {e}")
-            return data
+            return None
 
     def _create_beast_message(self, msg_type: int, data: bytes, timestamp: bytes = None) -> bytes:
         """
@@ -933,12 +840,11 @@ class PicADSBMultiplexer:
             data_portion.append(self.config.signal_level)  # Signal level
             data_portion.extend(data)  # ADS-B data
 
-            # Calculate CRC on data portion
-            crc = CRC24.compute(data_portion)
-            data_portion.append(crc)
-
             # Add escaped data to message
-            message.extend(self._escape_beast_data(data_portion))
+            escaped = self._escape_beast_data(data_portion)
+            if escaped is None:
+                return None
+            message.extend(escaped)
 
             self.logger.debug(f"Created Beast message: {message.hex().upper()}")
             return bytes(message)
@@ -1006,16 +912,16 @@ class PicADSBMultiplexer:
             disconnected = []
             for client in writable:
                 try:
-                    client.send(beast_msg)
+                    client.sendall(beast_msg)
                     self.client_last_active[client] = current_time
                 except Exception as e:
                     disconnected.append(client)
 
             if self.remote_socket:
                 try:
-                    self.remote_socket.send(beast_msg)
+                    self.remote_socket.sendall(beast_msg)
                 except Exception as e:
-                    self.remote_socket = None
+                    self._close_remote_socket()
 
             for client in disconnected:
                 self._remove_client(client)
@@ -1032,7 +938,7 @@ class PicADSBMultiplexer:
                 del self.client_last_active[client]
             try:
                 client.close()
-            except:
+            except Exception:
                 pass
             self.stats['clients_current'] = len(self.clients)
             self.logger.info("Client disconnected")
@@ -1093,68 +999,80 @@ class PicADSBMultiplexer:
 
     def self_test(self) -> bool:
         """
-        Perform self-test of CRC implementation using known test vectors.
+        Perform self-test of Beast message construction and validation.
+
+        Tests:
+        - Beast message framing (escape, type, timestamp, signal, data)
+        - Escape sequence handling (0x1A doubling)
+        - Message validation for known ADS-B messages
+        - pyModeS CRC verification
 
         Returns:
             True if all tests pass, False otherwise
         """
-        test_vectors = [
-            # Test vectors from Mode-S specification
-            ("8D406B902015A678D4D220AA4BDA", True),    # Example from docs, should have remainder 0
-            ("8D4CA251204994B1C36E60A5343D", False),   # Example from docs, should have remainder 16
-            # Additional known valid messages
-            ("8D152000004F90000000002D82E0", True),    # Valid DF17 message
-            ("8D4840D6202CC371C32CE0576098", True),    # Valid position message
-        ]
-
-        self.logger.info("Running CRC self-test...")
+        self.logger.info("Running self-test...")
         failed = False
 
-        for hex_msg, expected_valid in test_vectors:
-            try:
-                self.logger.debug(f"Testing message: {hex_msg}")
+        # Test 1: Beast message framing
+        test_data = bytes.fromhex("8D406B902015A678D4D220AA4BDA")  # 14-byte Mode-S long
+        beast_msg = self._create_beast_message(BeastFormat.TYPE_MODES_LONG, test_data)
+        if beast_msg is None:
+            self.logger.error("Self-test failed: _create_beast_message returned None")
+            return False
 
-                # Verify message format
-                if len(hex_msg) != 28:  # 112 bits = 28 hex chars
-                    self.logger.error(f"Invalid message length: {len(hex_msg)} chars")
-                    failed = True
-                    continue
+        # Verify start marker
+        if beast_msg[0] != BeastFormat.ESCAPE:
+            self.logger.error(f"Self-test failed: wrong start marker 0x{beast_msg[0]:02X}")
+            failed = True
 
-                # Verify using pyModeS
-                remainder = pms.common.crc(hex_msg)
-                is_valid = remainder == 0
+        # Verify type byte (after unescaping)
+        if beast_msg[1] != BeastFormat.TYPE_MODES_LONG:
+            self.logger.error(f"Self-test failed: wrong type byte 0x{beast_msg[1]:02X}")
+            failed = True
 
-                self.logger.debug(f"CRC remainder: {remainder}")
-                self.logger.debug(f"Message valid: {is_valid}")
+        # Test 2: Escape sequence handling
+        data_with_escape = bytes([0x1A, 0x00, 0x1A, 0x1A, 0x00, 0x00, 0x00])  # 7-byte Mode-S short
+        beast_escaped = self._create_beast_message(BeastFormat.TYPE_MODES_SHORT, data_with_escape)
+        if beast_escaped is None:
+            self.logger.error("Self-test failed: escape test returned None")
+            return False
 
-                if is_valid != expected_valid:
-                    self.logger.error(
-                        f"CRC test failed for {hex_msg}:\n"
-                        f"  Remainder: {remainder}\n"
-                        f"  Is valid: {is_valid}\n"
-                        f"  Expected valid: {expected_valid}"
-                    )
-                    failed = True
-                    continue
+        # Count 0x1A bytes in data portion (after start marker)
+        escaped_data = beast_escaped[1:]
+        escape_count = sum(1 for i in range(len(escaped_data) - 1)
+                          if escaped_data[i] == 0x1A and escaped_data[i + 1] == 0x1A)
+        # Data has 3 x 0x1A bytes, signal_level could also be 0x1A (0xFF by default, so no)
+        # Timestamp could contain 0x1A too, but we just verify escaping works
+        if escape_count < 3:
+            self.logger.error(f"Self-test failed: expected at least 3 escaped 0x1A pairs, got {escape_count}")
+            failed = True
 
-                # Additional validation
-                if expected_valid:
-                    df = pms.df(hex_msg)
-                    if df != 17:  # All our test messages should be DF17 (ADS-B)
-                        self.logger.error(f"Invalid DF: {df} for message: {hex_msg}")
-                        failed = True
-                        continue
+        # Test 3: Message validation
+        valid_msgs = [
+            b"*8D406B902015A678D4D220AA4BDA;",   # 14-byte Mode-S long
+            b"*02E19700000000;",                   # 7-byte Mode-S short
+            b"*A1B2;",                             # 2-byte Mode-A/C
+        ]
+        for msg in valid_msgs:
+            if not self.validate_message(msg):
+                self.logger.error(f"Self-test failed: valid message rejected: {msg}")
+                failed = True
 
-                self.logger.debug(f"Test passed for message: {hex_msg}")
-
-            except Exception as e:
-                self.logger.error(f"Test error for {hex_msg}: {e}")
-                return False
+        # Test 4: pyModeS CRC verification
+        test_hex = "8D406B902015A678D4D220AA4BDA"
+        try:
+            remainder = pms.common.crc(test_hex)
+            if remainder != 0:
+                self.logger.error(f"Self-test failed: CRC remainder {remainder} != 0 for known-good message")
+                failed = True
+        except Exception as e:
+            self.logger.error(f"Self-test failed: pyModeS CRC error: {e}")
+            failed = True
 
         if failed:
             return False
 
-        self.logger.info("All CRC tests passed successfully")
+        self.logger.info("All self-tests passed successfully")
         return True
 
     def check_health(self) -> bool:
@@ -1218,11 +1136,10 @@ class PicADSBMultiplexer:
         - Error recovery
         """
         self.logger.info("Starting multiplexer...")
-        last_sync_check = time.time()
         last_heartbeat = time.time()
 
         # Initialize remote connection if configured
-        if all([self.config.remote_host, self.config.remote_port]):
+        if self.config.remote_host is not None and self.config.remote_port is not None:
             self._connect_to_remote()
             self.logger.info(f"Remote connection enabled: {self.config.remote_host}:{self.config.remote_port}")
         else:
@@ -1241,7 +1158,7 @@ class PicADSBMultiplexer:
                     self._process_serial_data()
 
                     # Check remote connection only if configured
-                    if all([self.config.remote_host, self.config.remote_port]):
+                    if self.config.remote_host is not None and self.config.remote_port is not None:
                         self._check_remote_connection()
 
                     # Prepare sockets for select()
@@ -1259,13 +1176,13 @@ class PicADSBMultiplexer:
                                     data = sock.recv(1024)
                                     if not data:
                                         self.logger.warning("Remote server disconnected")
-                                        self.remote_socket = None
+                                        self._close_remote_socket()
                                     else:
                                         # Process remote data if needed
                                         pass
                                 except Exception as e:
                                     self.logger.error(f"Error receiving from remote: {e}")
-                                    self.remote_socket = None
+                                    self._close_remote_socket()
                             else:
                                 self._handle_client_data(sock)
                     except select.error:
@@ -1280,11 +1197,6 @@ class PicADSBMultiplexer:
                             break
 
                     # Periodic checks
-                    current_time = time.time()
-                    if current_time - last_sync_check >= self.config.sync_check_interval:
-                        self._check_sync_state()
-                        last_sync_check = current_time
-
                     self._update_stats()
                     self._check_timeouts()
                     self._check_device_status()
@@ -1309,26 +1221,26 @@ class PicADSBMultiplexer:
         if self.remote_socket:
             try:
                 self.remote_socket.close()
-            except:
+            except Exception:
                 pass
 
         # Close all client connections
         for client in self.clients:
             try:
                 client.close()
-            except:
+            except Exception:
                 pass
 
         # Close server socket
         try:
             self.server_socket.close()
-        except:
+        except Exception:
             pass
 
         # Close serial port
         try:
             self.shutdown()
-        except:
+        except Exception:
             pass
 
         self.logger.info("Cleanup completed")
