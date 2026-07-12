@@ -169,3 +169,6 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# Agent session handoff snapshots (local only)
+handoff.*.md
