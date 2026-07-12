@@ -5,11 +5,10 @@ Displays ADS-B messages in both formatted and RAW formats with message type iden
 """
 
 import socket
-import sys
 import time
 import signal
 from datetime import datetime
-from typing import Dict, Optional
+from typing import Optional
 import select
 
 class ADSBMonitor:
@@ -40,6 +39,8 @@ class ADSBMonitor:
         'A7': 'ACAS Resolution Advisory (DF20)',
     }
 
+    MAX_BUFFER = 4096  # Cap for the partial-message buffer (garbage guard)
+
     def __init__(self, host: str = 'localhost', port: int = 30002, raw_mode: bool = False):
         self.host = host
         self.port = port
@@ -49,6 +50,7 @@ class ADSBMonitor:
         self.reconnect_delay = 5  # Initial reconnect delay in seconds
         self.max_reconnect_delay = 30  # Maximum reconnect delay
         self.header_printed = False  # Flag to track if header was printed
+        self._buffer = b''  # Holds a partial message between recv() calls
         self.stats = {
             'total_messages': 0,
             'start_time': time.time(),
@@ -70,42 +72,25 @@ class ADSBMonitor:
                 print("-" * 100)
             self.header_printed = True
 
-    def identify_message_type(self, message: str) -> str:
-        """Extract and identify message type from the message"""
-        if len(message) > 3:
-            msg_type = message[1:3]
-            return self.MESSAGE_TYPES.get(msg_type, "Unknown Type")
-        return "Invalid Message"
+    def format_message(self, msg_str: str) -> Optional[tuple]:
+        """Format a decoded message and return its display components"""
+        # Skip keep-alive messages
+        if msg_str.startswith('*00'):
+            return None
 
-    def format_message(self, message: bytes) -> tuple:
-        """Format received message and return its components"""
-        try:
-            msg_str = message.decode('ascii').strip()
+        msg_type = msg_str[1:3]
+        description = self.MESSAGE_TYPES.get(msg_type, "Unknown Type")
 
-            # Skip keep-alive messages
-            if msg_str.startswith('*00'):
-                return None
+        # Update message statistics
+        self.stats['total_messages'] += 1
+        self.stats['messages_by_type'][msg_type] = self.stats['messages_by_type'].get(msg_type, 0) + 1
 
-            msg_type = msg_str[1:3]
-            description = self.MESSAGE_TYPES.get(msg_type, "Unknown Type")
-
-            # Update message statistics
-            self.stats['total_messages'] += 1
-            self.stats['messages_by_type'][msg_type] = self.stats['messages_by_type'].get(msg_type, 0) + 1
-
-            return (
-                datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3],
-                msg_type,
-                msg_str,
-                description
-            )
-        except Exception as e:
-            return (
-                datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3],
-                "ERROR",
-                str(e),
-                "Message Processing Error"
-            )
+        return (
+            datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3],
+            msg_type,
+            msg_str,
+            description
+        )
 
     def print_stats(self):
         """Print session statistics and message type distribution"""
@@ -152,6 +137,7 @@ class ADSBMonitor:
             self.socket.settimeout(5)  # Connection timeout
             self.socket.connect((self.host, self.port))
             self.socket.setblocking(False)  # Set non-blocking mode
+            self._buffer = b''  # Drop any partial message from the old connection
             if not self.header_printed:
                 self.print_header()
             return True
@@ -159,30 +145,51 @@ class ADSBMonitor:
             print(f"\rConnection error: {e}", end='')
             return False
 
+    def _feed(self, data: bytes):
+        """Split incoming bytes into messages, keeping the incomplete tail.
+
+        recv() is not message-aligned: a message can straddle two reads,
+        so the tail after the last ';' stays in the buffer until more
+        data arrives.
+        """
+        self._buffer += data
+        parts = self._buffer.split(b';')
+        self._buffer = parts[-1]
+        if len(self._buffer) > self.MAX_BUFFER:
+            self._buffer = b''  # Runaway garbage, drop it
+
+        for msg in parts[:-1]:
+            if msg.strip():  # Skip empty fragments (\r\n between messages)
+                self.process_message(msg)
+
     def process_message(self, msg: bytes):
         """Process and display message in either RAW or formatted mode"""
+        try:
+            text = msg.decode('ascii').strip()
+        except UnicodeDecodeError as e:
+            print(f"Error decoding message: {e}")
+            return
+
+        if not text.startswith('*'):
+            return
+
         if self.raw_mode:
-            # RAW mode - display message as is
-            try:
-                print(msg.decode('ascii').strip())
-            except Exception as e:
-                print(f"Error decoding message: {e}")
+            # RAW mode - display message as is (issue #1: count it too)
+            self.stats['total_messages'] += 1
+            print(text)
         else:
             # Formatted mode
-            if msg.startswith(b'*'):
-                formatted_msg = self.format_message(msg + b';')
-                if formatted_msg:  # Only print if not a keep-alive message
-                    timestamp, msg_type, message, description = formatted_msg
-                    print("\r{:<23} | {:<8} | {:<45} | {:<20}".format(
-                        timestamp, msg_type, message, description))
-                    # Print RAW format below
-                    print(f"\rRAW: {message}")
-                    print("\r" + "-" * 100)
+            formatted_msg = self.format_message(text + ';')
+            if formatted_msg:  # Only print if not a keep-alive message
+                timestamp, msg_type, message, description = formatted_msg
+                print("\r{:<23} | {:<8} | {:<45} | {:<20}".format(
+                    timestamp, msg_type, message, description))
+                # Print RAW format below
+                print(f"\rRAW: {message}")
+                print("\r" + "-" * 100)
 
     def run(self):
         """Main processing loop with automatic reconnection"""
-        self.print_header()  # Print header once at start
-
         while self.running:
             try:
                 if not self.connect():
@@ -203,15 +210,13 @@ class ADSBMonitor:
                                 print("\rConnection lost. Attempting to reconnect...", end='')
                                 break
 
-                            messages = data.split(b';')
-                            for msg in messages:
-                                if msg:  # Skip empty messages
-                                    self.process_message(msg)
+                            self._feed(data)
 
+                        except BlockingIOError:
+                            continue
                         except socket.error as e:
-                            if e.errno != socket.EAGAIN and e.errno != socket.EWOULDBLOCK:
-                                print(f"\rSocket error: {e}", end='')
-                                break
+                            print(f"\rSocket error: {e}", end='')
+                            break
 
             except KeyboardInterrupt:
                 print("\nUser interrupted")

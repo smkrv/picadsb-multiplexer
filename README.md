@@ -3,58 +3,47 @@
 <img src="assets/images/IMG_8767.jpg" alt="MicroADSB | adsbPIC by Sprut" style="width: 35%; max-width: 1140px; max-height: 960px; aspect-ratio: 19/16; object-fit: contain;"/><img src="assets/images/IMG_8769.jpg" alt="MicroADSB | adsbPIC by Sprut" style="width: 35%; max-width: 1140px; max-height: 960px; aspect-ratio: 19/16; object-fit: contain;"/><img src="assets/images/IMG_8771.jpg" alt="MicroADSB | adsbPIC by Sprut" style="width: 35%; max-width: 1140px; max-height: 960px; aspect-ratio: 19/16; object-fit: contain;"/><img src="assets/images/IMG_8772.jpg" alt="MicroADSB | adsbPIC by Sprut" style="width: 35%; max-width: 1140px; max-height: 960px; aspect-ratio: 19/16; object-fit: contain;"/>
 
 
-A Docker-based TCP multiplexer for MicroADSB (adsbPIC) USB receivers that allows sharing ADS-B data with multiple clients (like dump1090).   
+A TCP multiplexer for MicroADSB (adsbPIC) USB receivers: reads ADS-B messages from the device, converts them to Beast binary format and serves them to multiple clients (dump1090, readsb and other feeders).
 
-ⓘ Can also be used without Docker as a system service using Python environment only, instructions [available here](#direct-python-installation-and-usage-without-docker).
+Note: can also run without Docker as a plain Python service, instructions [available here](#direct-python-installation-and-usage-without-docker).
 
-If you have a USB ADS-B receiver like this, you can easily contribute aircraft data to various flight tracking services like FlightRadar24, FlightAware, ADSBHub, OpenSky Network, ADS-B Exchange, ADSB.lol and many others. Despite its age and simplicity, MicroADSB / adsbPIC by Sprut often outperforms many cheap RTL-SDR dongles in ADS-B reception quality and stability.
+If you have a USB ADS-B receiver like this, you can feed aircraft data to flight tracking services: FlightRadar24, FlightAware, ADSBHub, OpenSky Network, ADS-B Exchange, ADSB.lol and others. Despite its age and simplicity, MicroADSB / adsbPIC by Sprut often outperforms cheap RTL-SDR dongles in ADS-B reception quality and stability.
 
-The device works perfectly on Raspberry Pi and other Unix-based systems, making it an excellent choice for feeding data to popular aggregators.    
+The device runs on Raspberry Pi and other Unix systems and works fine as a 24/7 feeder.
 
 ## Features
 
 - Supports MicroADSB USB receivers (microADSB / adsbPIC)
-- Implements Beast Binary Format v2.0 for maximum compatibility
-- Advanced message validation using [pyModeS](https://github.com/junzis/pyModeS) library:
-  - Reliable CRC computation and verification
-  - Robust error detection
-- Dual-mode operation:
-  - TCP server for multiple client connections
-  - TCP client for forwarding data to remote servers
-- High-performance message processing:
-  - Up to 500 messages/sec on 1 GHz CPU
-  - Optimized CRC calculation
-  - Efficient memory usage (~5 MB/1k connections)
-- Real-time statistics and monitoring
-- Configurable TCP ports and device settings
-- Docker support with automatic builds
-- Proper device initialization and error handling
-- Automatic reconnection on device errors
+- Outputs Beast binary format v2.0 (Mode-S short and long, Mode-A/C)
+- TCP server for multiple clients, optional forwarding to a remote server
+- Message validation: format, hex content and length checks; startup self-test verifies Beast framing and CRC via [pyModeS](https://github.com/junzis/pyModeS)
+- Periodic statistics: message rate, queue utilization, memory, connected clients
+- Automatic device reconnection with exponential backoff
+- Docker image with hardened defaults; CI runs the test suite on Python 3.11, 3.12 and 3.13
 
 ## Protocol Support
 
-### Beast Binary Format
-- Full implementation of Beast Binary Format v2.0
-- Supports all message types:
-  - Mode-S Short (DF17, 7 bytes)
-  - Mode-S Long (14 bytes)
-  - Mode-A/C with MLAT
-- Features:
-  - 6-byte precision timestamps
-  - CRC-24 validation
-  - Proper escape sequence handling
-  - Compatible with dump1090 and other tools
+### Beast binary format (output)
+- Frame layout: `0x1A` start marker, type byte, 6-byte timestamp, signal level, message data
+- Message types: Mode-S short (7 bytes, type 0x32), Mode-S long (14 bytes, type 0x33, including DF17), Mode-A/C (2 bytes, type 0x31)
+- `0x1A` bytes inside the frame are escaped by doubling, per the Beast specification
+- Timestamps are microseconds since midnight. The hardware has no 12 MHz counter, so MLAT is not supported
+- Beast framing carries no CRC field; the ADS-B CRC lives inside the message data and is checked by consumers such as dump1090
+
+### Device protocol (input)
+- ASCII frames `*<hex>;` over USB CDC at 115200 baud
+- Mode-S short (7 bytes), Mode-S long (14 bytes), Mode-A/C (2 bytes)
 
 ## Device Specifications
-- Original adsbPIC creator: Joerg Bredendiek — [Sprut](https://sprut.de/electronic/pic/projekte/adsb/adsb_en.html)
-- Device: MicroADSB USB receiver (≈2010-20??)
+- Original adsbPIC creator: Joerg Bredendiek - [Sprut](https://sprut.de/electronic/pic/projekte/adsb/adsb_en.html)
+- Device: MicroADSB USB receiver (~2010)
 - Manufacturer: Miroslav Ionov
   - MicroADSB.com (website no longer available), last archived copy on WebArchive: [September 18, 2024](https://web.archive.org/web/20240918230020/http://www.microadsb.com/)
   - Anteni.net (active as of Feb 2025)
 - Microcontroller: PIC18F2550
-- Firmware: Joerg Bredendiek — [Sprut](https://sprut.de)
+- Firmware: Joerg Bredendiek - [Sprut](https://sprut.de)
 - Maximum theoretical frame rate: 200,000 fpm
-- Practical maximum frame rate: ≈6,000 fpm
+- Practical maximum frame rate: ~5,500 fpm
 - Communication: USB CDC (115200 baud)
 - Message format: ASCII, prefixed with '*', terminated with ';'
 
@@ -67,7 +56,7 @@ The device works perfectly on Raspberry Pi and other Unix-based systems, making 
 
 ## Quick Start
 
-ⓘ Set DIP switch 1 to ON position, while keeping others OFF:
+Note: set DIP switch 1 to ON position, while keeping others OFF:
 
 ```console
  1   2   3   4  
@@ -80,7 +69,7 @@ ON  OFF OFF OFF
 
 ### Using Docker Compose
 
-1. Create a `docker-compose.yml`:
+1. Create a `docker-compose.yml` (the [repository version](docker-compose.yml) adds resource limits and security hardening):
 ```yaml
 services:
   picadsb-multiplexer:
@@ -90,20 +79,20 @@ services:
     devices:
       - /dev/ttyACM0:/dev/ttyACM0
     ports:
-      - "31002:31002"
+      - "127.0.0.1:31002:31002"  # drop the 127.0.0.1 prefix if other hosts need access
     environment:
       - ADSB_TCP_PORT=31002
       - ADSB_DEVICE=/dev/ttyACM0
       - ADSB_LOG_LEVEL=INFO
-      - ADSB_REMOTE_HOST= # Indicate if required
-      - ADSB_REMOTE_PORT= # Indicate if required
+      - ADSB_REMOTE_HOST=  # set only for forwarding
+      - ADSB_REMOTE_PORT=  # set only for forwarding
     volumes:
       - ./logs:/app/logs
 ```
 
 2. Start the service:
 ```bash
-docker-compose up -d
+docker compose up -d
 ```
 
 ### Using Docker Run
@@ -111,16 +100,16 @@ docker-compose up -d
 ```bash
 docker run -d \
     --name picadsb-multiplexer \
-    --serial=/dev/ttyACM0:/dev/ttyACM0 \
+    --device=/dev/ttyACM0:/dev/ttyACM0 \
     -p 31002:31002 \
     -e ADSB_TCP_PORT=31002 \
     -e ADSB_DEVICE=/dev/ttyACM0 \
     -e ADSB_LOG_LEVEL=INFO \
-    -e ADSB_REMOTE_HOST=localhost \ # Indicate if required
-    -e ADSB_REMOTE_PORT=30005 \ # Indicate if required
     -v $(pwd)/logs:/app/logs \
     ghcr.io/smkrv/picadsb-multiplexer:latest
 ```
+
+To forward data to a remote server, add `-e ADSB_REMOTE_HOST=<host> -e ADSB_REMOTE_PORT=<port>`.
 
 ## Configuration
 
@@ -131,45 +120,31 @@ docker run -d \
 | ADSB_TCP_PORT | TCP port for client connections | 31002 |
 | ADSB_DEVICE | Path to USB device | /dev/ttyACM0 |
 | ADSB_LOG_LEVEL | Logging level (DEBUG, INFO, WARNING, ERROR) | INFO |
+| ADSB_MAX_CLIENTS | Maximum simultaneous TCP clients | 50 |
+| ADSB_NO_INIT | Skip device initialization sequence (true/false) | false |
 | ADSB_REMOTE_HOST | Remote server host for forwarding (optional) | |
 | ADSB_REMOTE_PORT | Remote server port for forwarding (optional) | |
+| MAX_LOG_SIZE | Log directory size limit before cleanup | 100M |
+| LOG_RETENTION_DAYS | Days to keep rotated logs | 7 |
 
+Note: the Docker image listens on 31002 by default; the Python script itself defaults to 30002 when run directly.
 
-#### TCP Server Mode
-- Accepts multiple client connections
-- Ideal for feeding multiple services simultaneously
-- Example services:
-  - dump1090
-  - FlightAware
-  - ADSBHub
-  - OpenSky Network
-  - ADS-B Exchange
-  - ADSB.lol
+#### TCP server mode
+Accepts multiple client connections on `ADSB_TCP_PORT`, suitable for feeding several services at once (dump1090, FlightAware, ADSBHub, OpenSky Network, ADS-B Exchange, ADSB.lol).
 
-#### TCP Client Mode
-- Forwards data to a remote server
-- Maintains persistent connection
-- Automatic reconnection on failures
-- Example usage:
+#### TCP client mode
+Forwards data to one remote server, keeps the connection alive with Beast heartbeats and reconnects on failures:
 ```yaml
 services:
   picadsb-multiplexer:
     environment:
-      - ADSB_REMOTE_HOST=feed.adsbexchange.com
-      - ADSB_REMOTE_PORT=30005
+      - ADSB_REMOTE_HOST=feed.example.com
+      - ADSB_REMOTE_PORT=30004
 ```
 
-### Performance Tuning
+### Performance
 
-#### Memory Usage
-- Base footprint: ~5 MB
-- Per-client overhead: ~2 KB
-- Maximum recommended clients: 1000
-
-#### CPU Usage
-- Idle: <1% on Raspberry Pi 3
-- Peak: ~5-10% at 500 msg/sec
-- CRC calculation: Optimized with lookup table
+The multiplexer is a single-threaded select-based event loop. The device tops out at ~5,500 frames per minute (~92 messages per second), which leaves the loop mostly idle: on a Raspberry Pi 3 CPU usage stays in single digits and the container runs within its 256 MB memory limit with a wide margin.
 
 ### Device Permissions
 
@@ -192,24 +167,22 @@ sudo udevadm control --reload-rules
 sudo udevadm trigger
 ```
 
-## Integration with dump1090
+## Integration with dump1090 / readsb
 
-### Using Docker
+The multiplexer outputs Beast binary format, so consumers must read it as Beast input (not raw AVR).
+
+Pull mode - readsb connects to the multiplexer:
 
 ```bash
-# Start dump1090 with network input from multiplexer
-docker run -d \
-    --name dump1090 \
-    --network host \
-    antirez/dump1090 \
-    --net-only \
-    --net-ri-port 31002
+readsb --net-only --net-connector 127.0.0.1,31002,beast_in
 ```
 
-### Using Native Installation
+Push mode - the multiplexer connects to the consumer's Beast input port (dump1090 and readsb listen on 30004/30104 by default). Works with plain dump1090, which cannot initiate connections:
 
-```bash
-dump1090 --net-only --net-ri-port 31002
+```yaml
+environment:
+  - ADSB_REMOTE_HOST=dump1090-host
+  - ADSB_REMOTE_PORT=30004
 ```
 
 ## Building from Source
@@ -236,28 +209,40 @@ docker build -t picadsb-multiplexer .
 ├── README.md
 ├── adsb_message_parser.py
 ├── assets
-│   └── images
-│       ├── IMG_8767.jpg
-│       ├── IMG_8768.jpg
-│       ├── IMG_8769.jpg
-│       ├── IMG_8771.jpg
-│       └── IMG_8772.jpg
+│   └── images
 ├── docker-compose.yml
 ├── entrypoint.sh
+├── health_check.sh
+├── picadsb
+│   ├── __init__.py
+│   └── config.py
 ├── picadsb-multiplexer.py
+├── pyproject.toml
 ├── requirements.txt
-├── .dockerignore
+├── tests
+│   ├── conftest.py
+│   ├── test_beast.py
+│   ├── test_config.py
+│   ├── test_escape.py
+│   └── test_validate.py
 └── .github
     └── workflows
-        └── docker-publish.yml
+        ├── docker-publish.yml
+        └── test.yml
 ```
 
 ### Running Tests
 
 ```bash
-# Run the multiplexer in debug mode
+pip install -r requirements.txt pytest
+pytest tests/ -v
+```
+
+### Debug Run
+
+```bash
 docker run -it --rm \
-    --serial=/dev/ttyACM0:/dev/ttyACM0 \
+    --device=/dev/ttyACM0:/dev/ttyACM0 \
     -e ADSB_LOG_LEVEL=DEBUG \
     picadsb-multiplexer
 ```
@@ -266,17 +251,11 @@ docker run -it --rm \
 
 ### Logs
 
-Logs are stored in the `logs` directory:
-- `picadsb-multiplexer_YYYYMMDD_HHMMSS.log`: Detailed application log
-- Container logs can be viewed with `docker logs picadsb-multiplexer`
+The application writes to `logs/picadsb.log` with rotation (10 MB per file, 5 backups). Container output is also available via `docker logs picadsb-multiplexer`.
 
 ### Statistics
 
-The multiplexer maintains real-time statistics:
-- Messages processed
-- Messages per minute
-- Client connections
-- Error counts
+Logged every 60 seconds: uptime, messages per minute, data rate, dropped and invalid messages, error rate, memory usage, connected clients, queue utilization. Clients can also request them over TCP with the `STATS` command (`VERSION` returns the version).
 
 ## Troubleshooting
 
@@ -300,49 +279,38 @@ sudo usermod -a -G dialout $USER
 3. Connection refused:
 ```bash
 # Check if port is open
-netstat -tuln | grep 31002
+ss -tln | grep 31002
 ```
 
 ### Debug Mode
 
-Enable debug logging:
+Set `ADSB_LOG_LEVEL=DEBUG` in `docker-compose.yml` (or pass `-e ADSB_LOG_LEVEL=DEBUG` to `docker run`) and restart:
 ```bash
-docker-compose up -d -e ADSB_LOG_LEVEL=DEBUG
-```
-
-
-### Performance Metrics
-```
-Messages/sec: 500
-Beast conversion: 99.9%
-CRC validation: 99.9%
-Buffer usage: 2%
-Active clients: 5
-Remote connection: Connected
+docker compose up -d
 ```
 
 ---
 
 ## ADS-B Message Monitor ([adsb_message_parser.py](/adsb_message_parser.py))
 
-A real-time monitoring tool for ADS-B messages that provides a formatted display of aircraft surveillance data.
+A real-time monitoring tool for ADS-B messages: formatted table output, message type identification and session statistics. Useful for quick testing and debugging of the multiplexer or any raw-format ADS-B source.
 
 ### Features
-- Real-time display of ADS-B messages in a structured table format
-- Message type identification and description
-- Statistical analysis of received messages
-- Support for various ADS-B message formats (DF0, DF4, DF5, DF17, DF20)
-- Filtering of keep-alive messages
+- Real-time display of ADS-B messages in a structured table
+- Message type identification and description (DF0, DF4, DF5, DF17, DF20)
+- Keep-alive filtering
 - Session statistics with message type distribution
+- RAW mode for unformatted output
 
 ### Usage
 ```bash
-python3 adsb_message_parser.py [--host HOST] [--port PORT]
+python3 adsb_message_parser.py [--host HOST] [--port PORT] [--raw]
 ```
 
 ### Arguments
 - `--host`: Server host address (default: localhost)
-- `--port`: Server port number (default: 31002)
+- `--port`: Server port number (default: 30002; use 31002 for the Docker setup)
+- `--raw`: Display messages in RAW format only
 
 ### Example Output
 ```
@@ -354,8 +322,6 @@ Timestamp               | Type     | Message                     | Description
 2025-02-14 15:03:00.012 | 28       | *28000000000000;            | Extended Squitter (DF5)
 ```
 
-A real-time monitoring tool for ADS-B messages that provides a formatted display of aircraft surveillance data. Designed for quick testing and debugging of ADS-B receivers with human-readable output, message type identification, and live statistics tracking.
-
 ---
 
 ### Direct Python Installation and Usage (Without Docker)
@@ -364,13 +330,13 @@ A real-time monitoring tool for ADS-B messages that provides a formatted display
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/smkrv/picadsb-multiplexer/tree/main
+git clone https://github.com/smkrv/picadsb-multiplexer.git
 cd picadsb-multiplexer
 ```
 
-2. Install required dependency:
+2. Install dependencies:
 ```bash
-pip3 install pyserial
+pip3 install -r requirements.txt
 ```
 
 #### Device Setup (Recommended)
@@ -388,8 +354,6 @@ Apply new rule:
 sudo udevadm control --reload-rules
 ```
 
-#### Usage
-
 #### Basic Operation
 
 Start the multiplexer:
@@ -401,19 +365,14 @@ python3 picadsb-multiplexer.py --port 31002 --serial /dev/ttyACM0
 
 Verify data flow using included test client:
 ```bash
-python3 adsb_message_parser.py [--host localhost] [--port 31002]
+python3 adsb_message_parser.py --host localhost --port 31002
 ```
 
 #### Integration with dump1090
 
-Connect to multiplexer using dump1090:
-```bash
-dump1090 --net-only --net-ri-port 31002
-```
+See [Integration with dump1090 / readsb](#integration-with-dump1090--readsb); the same pull and push modes apply outside Docker (`--remote-host` / `--remote-port` CLI flags replace the environment variables).
 
 #### Running as System Service
-
-#### Service Setup
 
 1. Create systemd service file:
 ```bash
@@ -438,9 +397,7 @@ User=your_username
 WantedBy=multi-user.target
 ```
 
-#### Service Management
-
-Enable and start:
+3. Enable and start:
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl enable picadsbmultiplexer
@@ -452,8 +409,6 @@ Check status:
 sudo systemctl status picadsbmultiplexer
 ```
 
-#### Monitoring
-
 #### Log Access
 
 Service logs:
@@ -463,7 +418,7 @@ sudo journalctl -u picadsbmultiplexer -f
 
 Application logs:
 ```bash
-tail -f logs/adsb_muxer_*.log
+tail -f logs/picadsb.log
 ```
 
 ---
@@ -478,10 +433,10 @@ tail -f logs/adsb_muxer_*.log
 
 ## Acknowledgments
 
-- Original adsbPIC creator & firmware by Joerg Bredendiek — [Sprut](https://sprut.de)
+- Original adsbPIC creator & firmware by Joerg Bredendiek - [Sprut](https://sprut.de)
 - Original MicroADSB device by Miroslav Ionov
 - [dump1090](https://github.com/antirez/dump1090) project for ADS-B decoding
-- [pyModeS](https://github.com/junzis/pyModeS) The Python ADS-B/Mode-S Decoder
+- [pyModeS](https://github.com/junzis/pyModeS) - the Python ADS-B/Mode-S decoder
 
 ## Legal Disclaimer and Limitation of Liability  
 
@@ -496,12 +451,12 @@ DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
 ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER   
 DEALINGS IN THE SOFTWARE.  
 
-## 📝 License
+## License
 
 Author: SMKRV
-[CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/) - see [LICENSE](LICENSE) for details.
+[MIT](https://opensource.org/license/mit) - see [LICENSE](LICENSE) for details.
 
-## 💡 Support the Project
+## Support the Project
 
 The best support is:
 - Sharing feedback
@@ -515,13 +470,11 @@ If you want to say thanks financially, you can send a small token of appreciatio
 **USDT Wallet (TRC10/TRC20):**
 `TXC9zYHYPfWUGi4Sv4R1ctTBGScXXQk5HZ`
 
-*Open-source is built by community passion!* 🚀
-
 ---
 
 <div align="center">
 
-Made with ❤️ for the Aviation & Radio Enthusiasts Community
+Made for the aviation and radio enthusiasts community
 
 [Report Bug](https://github.com/smkrv/picadsb-multiplexer/issues) · [Request Feature](https://github.com/smkrv/picadsb-multiplexer/issues)
 

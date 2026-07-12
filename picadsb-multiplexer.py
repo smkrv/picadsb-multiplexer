@@ -2,7 +2,7 @@
 """
 ADS-B Multiplexer for MicroADSB / adsbPIC by Sprut devices.
 
-@license: CC BY-NC-SA 4.0 International
+@license: MIT
 @author: SMKRV
 @github: https://github.com/smkrv/picadsb-multiplexer
 @source: https://github.com/smkrv/picadsb-multiplexer
@@ -85,9 +85,13 @@ class TimestampGenerator:
             current_time = time.time()
             current_micros = int((current_time % 86400) * 1e6)  # Microseconds since start of day
 
-            # Ensure monotonicity (handles midnight rollover naturally)
+            # Nudge equal/jittered values to stay monotonic; a backward jump
+            # of more than a second is the midnight rollover — accept the
+            # reset so timestamps keep tracking wall time instead of
+            # crawling at +1us per message for the next 24 hours.
             if current_micros <= self.last_micros:
-                current_micros = self.last_micros + 1
+                if self.last_micros - current_micros < 1_000_000:
+                    current_micros = self.last_micros + 1
 
             # Clamp to 6-byte range
             current_micros = current_micros % (BeastFormat.MAX_TIMESTAMP + 1)
@@ -171,7 +175,6 @@ class PicADSBMultiplexer:
             'bytes_received': 0,
             'bytes_processed': 0,
             'invalid_messages': 0,
-            'recovered_messages': 0,
             'buffer_truncated': 0
         }
 
@@ -225,10 +228,15 @@ class PicADSBMultiplexer:
 
         self.logger.debug(f"Heartbeat message: {final_msg.hex().upper()}")
 
+        current_time = time.time()
         disconnected = []
         for client in self.clients:
             try:
                 client.sendall(final_msg)
+                # A delivered heartbeat proves the connection is alive;
+                # without this, read-only clients (dump1090/readsb) get
+                # evicted by _check_timeouts during quiet periods.
+                self.client_last_active[client] = current_time
             except Exception as e:
                 self.logger.warning(f"Failed to send heartbeat: {e}")
                 disconnected.append(client)
@@ -277,11 +285,7 @@ class PicADSBMultiplexer:
         self._last_connect_attempt = current_time
 
         try:
-            if self.remote_socket:
-                try:
-                    self.remote_socket.close()
-                except Exception:
-                    pass
+            self._close_remote_socket()
 
             self.remote_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.remote_socket.settimeout(5)
@@ -290,7 +294,7 @@ class PicADSBMultiplexer:
             self.logger.info(f"Connected to remote server {self.config.remote_host}:{self.config.remote_port}")
         except Exception as e:
             self.logger.warning(f"Failed to connect to remote server: {e}")
-            self.remote_socket = None
+            self._close_remote_socket()
 
     def _check_remote_connection(self):
         """
@@ -524,7 +528,10 @@ class PicADSBMultiplexer:
                 for byte in data:
                     byte_val = bytes([byte])
 
-                    if byte_val in b'*#@$%&':
+                    # Start markers must match the prefixes validate_message
+                    # accepts, otherwise frames are assembled only to be
+                    # counted invalid.
+                    if byte_val in b'*#@':
                         if self._serial_parse_buffer and len(self._serial_parse_buffer) > 5:
                             self.logger.debug(f"Incomplete message: {bytes(self._serial_parse_buffer)!r}")
                         self._serial_parse_buffer = bytearray([byte])
@@ -545,19 +552,12 @@ class PicADSBMultiplexer:
                             except queue.Full:
                                 self.stats['messages_dropped'] += 1
                         else:
-                            if final_msg.startswith(b'*') and len(self._serial_parse_buffer) > 3:
-                                content = final_msg[1:-1]
-                                try:
-                                    bytes.fromhex(content.decode())
-                                    self.message_queue.put_nowait(final_msg + b'\n')
-                                    self.stats['recovered_messages'] += 1
-                                    self.logger.debug(f"Recovered partial message: {final_msg!r}")
-                                except (ValueError, UnicodeDecodeError):
-                                    self.stats['invalid_messages'] += 1
-                                except queue.Full:
-                                    self.stats['messages_dropped'] += 1
-                            else:
-                                self.stats['invalid_messages'] += 1
+                            # No recovery attempt: anything validate_message
+                            # rejects would be dropped by _convert_to_beast
+                            # at broadcast anyway (bad hex or unsupported
+                            # length), so queueing it only skews stats.
+                            self.stats['invalid_messages'] += 1
+                            self.logger.debug(f"Invalid message: {final_msg!r}")
                         self._serial_parse_buffer = bytearray()
                     else:
                         self._serial_parse_buffer.append(byte)
@@ -565,9 +565,20 @@ class PicADSBMultiplexer:
                             self._serial_parse_buffer = bytearray()
                             self.stats['buffer_truncated'] += 1
 
+        except (serial.SerialException, OSError) as e:
+            self.logger.error(f"Serial device error: {e}")
+            self.stats['errors'] += 1
+            self._handle_device_loss()
         except Exception as e:
             self.logger.error(f"Error in serial processing: {e}")
             self.stats['errors'] += 1
+
+    def _handle_device_loss(self):
+        """Recover from a lost serial device (unplug or I/O failure)."""
+        self.logger.error("Serial device lost, attempting to reconnect...")
+        if not self._reconnect():
+            self.logger.error("Failed to reconnect to device")
+            self.running = False
 
     def _check_device_status(self):
         """Check device status if no data received for a while."""
@@ -578,8 +589,16 @@ class PicADSBMultiplexer:
                 self.logger.warning(f"No data received for {self.config.no_data_timeout} seconds, checking device...")
                 self._no_data_logged = True
 
-            self.ser.write(self.format_command(b'\x43\x02'))
-            response = self._read_response()
+            try:
+                self.ser.write(self.format_command(b'\x43\x02'))
+                response = self._read_response()
+            except (serial.SerialException, OSError) as e:
+                # A hard unplug makes write()/in_waiting raise; without this
+                # handler the exception escapes to the main loop and
+                # _reconnect below is never reached.
+                self.logger.error(f"Device check failed: {e}")
+                self._handle_device_loss()
+                return
 
             if not response or not self.verify_response(b'\x43\x02', response):
                 self.logger.error("Device not responding to mode check")

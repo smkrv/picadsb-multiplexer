@@ -1,4 +1,6 @@
 """Tests for Beast format encoding and TimestampGenerator."""
+import time
+
 import pytest
 
 from tests.conftest import BeastFormat, TimestampGenerator
@@ -65,3 +67,29 @@ class TestTimestampGenerator:
             ts = gen.get_timestamp()
             val = int.from_bytes(ts, "big")
             assert val <= BeastFormat.MAX_TIMESTAMP
+
+    def test_microseconds_since_midnight_unit(self, monkeypatch):
+        # Pin the unit contract exactly: a wrong-unit regression
+        # (milliseconds, 12 MHz ticks) must fail this test.
+        fixed = 1_700_000_000.123456
+        monkeypatch.setattr(time, "time", lambda: fixed)
+        gen = TimestampGenerator()
+        expected = int((fixed % 86400) * 1e6)
+        assert int.from_bytes(gen.get_timestamp(), "big") == expected
+
+    def test_midnight_rollover_resets_to_wall_time(self, monkeypatch):
+        # Just before midnight the counter is huge; right after midnight the
+        # generator must accept the reset instead of crawling at +1us/msg.
+        gen = TimestampGenerator()
+        gen.last_micros = 86_399_999_000  # ~1ms before midnight
+        after_midnight = 0.5  # 500ms past midnight
+        monkeypatch.setattr(time, "time", lambda: after_midnight)
+        val = int.from_bytes(gen.get_timestamp(), "big")
+        assert val == 500_000
+
+    def test_small_backward_jitter_stays_monotonic(self, monkeypatch):
+        gen = TimestampGenerator()
+        gen.last_micros = 1_000_000
+        monkeypatch.setattr(time, "time", lambda: 0.9999995)  # 0.5us back
+        val = int.from_bytes(gen.get_timestamp(), "big")
+        assert val == 1_000_001
